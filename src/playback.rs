@@ -9,6 +9,8 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::time::{SystemTime, Duration};
 use tracing::{info, warn};
+use tokio::net::TcpStream;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Clone)]
 pub struct PlaybackService {
@@ -58,36 +60,34 @@ impl PlaybackService {
             if let Some(original_url) = record.request.uri.as_ref() {
                 match SERVICE_REGISTRY.find_local_service(original_url).await {
                     Ok(Some(service)) => {
-                        // 构建本地服务URL
-                        let local_url = format!("http://{}:{}{}", 
-                            service.host, 
-                            service.port,
-                            req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
-                        );
+                        // 构建本地服务连接
+                        let addr = format!("{}:{}", service.host, service.port);
+                        info!("Replaying traffic to local service: {}", addr);
 
-                        info!("Replaying traffic to local service: {}", local_url);
-
-                        // 转发请求到本地服务
-                        let local_req = Request::builder()
-                            .method(req.method())
-                            .uri(local_url)
-                            .body(Full::new(Bytes::from(record.request.body.clone())))
-                            .unwrap();
-
-                        let client = Builder::new((*self.executor).clone())
-                            .pool_idle_timeout(std::time::Duration::from_secs(30))
-                            .build_http();
-                        match client.request(local_req).await {
-                            Ok(resp) => {
-                                info!("Successfully replayed traffic to local service");
-                                let body = resp.into_body();
-                                match body.collect().await {
-                                    Ok(collected) => {
-                                        let bytes = collected.to_bytes();
-                                        return Response::new(Full::new(bytes));
+                        match TcpStream::connect(&addr).await {
+                            Ok(mut stream) => {
+                                // 发送请求数据
+                                if let Err(e) = stream.write_all(&record.request.body).await {
+                                    warn!("Failed to write request to local service: {}", e);
+                                } else {
+                                    // 读取响应数据
+                                    let mut response_data = Vec::new();
+                                    let mut buffer = [0u8; 8192];
+                                    
+                                    loop {
+                                        match stream.read(&mut buffer).await {
+                                            Ok(0) => break, // EOF
+                                            Ok(n) => response_data.extend_from_slice(&buffer[..n]),
+                                            Err(e) => {
+                                                warn!("Failed to read response from local service: {}", e);
+                                                break;
+                                            }
+                                        }
                                     }
-                                    Err(e) => {
-                                        warn!("Failed to collect response body: {}, falling back to recorded response", e);
+
+                                    if !response_data.is_empty() {
+                                        info!("Successfully replayed traffic to local service");
+                                        return Response::new(Full::new(Bytes::from(response_data)));
                                     }
                                 }
                             }
