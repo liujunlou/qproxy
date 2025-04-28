@@ -12,15 +12,8 @@ use bytes::Bytes;
 use http_body_util::Full;
 
 use crate::{
-    options::{Options, ProxyMode}, 
-    errors::Error,
-    model::TrafficRecord,
-    playback::PlaybackService,
+    errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}, playback::PlaybackService
 };
-
-static PLAYBACK_SERVICE: once_cell::sync::Lazy<Arc<PlaybackService>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(PlaybackService::new())
-});
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let addr = format!("{}:{}", options.tcp.host, options.tcp.port);
@@ -84,8 +77,15 @@ async fn handle_tcp_proxy(mut inbound: TlsStream<TcpStream>, options: Arc<Option
                                             buffer[..n].to_vec(),
                                             vec![],
                                         );
-                                        PLAYBACK_SERVICE.add_record(record.clone()).await;
-                                        info!("Recorded {} bytes of upstream traffic", n);
+                                        match get_playback_service().await {
+                                            Ok(playback_service) => {
+                                                playback_service.add_record(record.clone()).await;
+                                                info!("Recorded {} bytes of upstream traffic", n);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to get playback service: {}", e);
+                                            }
+                                        }
 
                                         // 如果配置了peer，则转发到peer
                                         if let Some(peer) = &options.peer {
@@ -131,8 +131,15 @@ async fn handle_tcp_proxy(mut inbound: TlsStream<TcpStream>, options: Arc<Option
                                             buffer[..n].to_vec(),
                                         );
                                         // todo 检查返回的响应处理
-                                        PLAYBACK_SERVICE.add_record(record.clone()).await;
-                                        info!("Recorded {} bytes of downstream traffic", n);
+                                        match get_playback_service().await {
+                                            Ok(playback_service) => {
+                                                playback_service.add_record(record.clone()).await;
+                                                info!("Recorded {} bytes of downstream traffic", n);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to get playback service: {}", e);
+                                            }
+                                        }
 
                                         // 如果配置了peer，则转发到peer
                                         if let Some(peer) = &options.peer {
@@ -174,23 +181,31 @@ async fn handle_tcp_proxy(mut inbound: TlsStream<TcpStream>, options: Arc<Option
                         Ok(0) => continue,
                         Ok(n) => {
                             // 查找匹配的记录
-                            let records = PLAYBACK_SERVICE.get_recent_records(None).await;
-                            for record in records {
-                                if record.protocol == crate::model::Protocol::TCP {
-                                    // 回放请求
-                                    if !record.request.body.is_empty() {
-                                        if let Err(e) = wo.write_all(&record.request.body).await {
-                                            error!("Failed to playback request: {}", e);
-                                            break;
+                            match get_playback_service().await {
+                                Ok(playback_service) => {
+                                    let records = playback_service.get_recent_records(None).await;
+                                    for record in records {
+                                        if record.protocol == crate::model::Protocol::TCP {
+                                            // 回放请求
+                                            if !record.request.body.is_empty() {
+                                                if let Err(e) = wo.write_all(&record.request.body).await {
+                                                    error!("Failed to playback request: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                            // 回放响应
+                                            if !record.response.body.is_empty() {
+                                                if let Err(e) = wi.write_all(&record.response.body).await {
+                                                    error!("Failed to playback response: {}", e);
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
-                                    // 回放响应
-                                    if !record.response.body.is_empty() {
-                                        if let Err(e) = wi.write_all(&record.response.body).await {
-                                            error!("Failed to playback response: {}", e);
-                                            break;
-                                        }
-                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to get playback service: {}", e);
+                                    break;
                                 }
                             }
                         }
@@ -279,8 +294,15 @@ async fn handle_proxy(mut inbound: TcpStream, options: Arc<Options>) {
                                             buffer[..n].to_vec(),
                                             vec![],
                                         );
-                                        PLAYBACK_SERVICE.add_record(record.clone()).await;
-                                        info!("Recorded {} bytes of upstream traffic", n);
+                                        match get_playback_service().await {
+                                            Ok(playback_service) => {
+                                                playback_service.add_record(record.clone()).await;
+                                                info!("Recorded {} bytes of upstream traffic", n);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to get playback service: {}", e);
+                                            }
+                                        }
 
                                         // 如果配置了peer，则转发到peer
                                         if let Some(peer) = &options.peer {
@@ -324,8 +346,15 @@ async fn handle_proxy(mut inbound: TcpStream, options: Arc<Options>) {
                                             vec![],
                                             buffer[..n].to_vec(),
                                         );
-                                        PLAYBACK_SERVICE.add_record(record.clone()).await;
-                                        info!("Recorded {} bytes of downstream traffic", n);
+                                        match get_playback_service().await {
+                                            Ok(playback_service) => {
+                                                playback_service.add_record(record.clone()).await;
+                                                info!("Recorded {} bytes of downstream traffic", n);
+                                            }
+                                            Err(e) => {
+                                                error!("Failed to get playback service: {}", e);
+                                            }
+                                        }
 
                                         // 如果配置了peer，则转发到peer
                                         if let Some(peer) = &options.peer {
@@ -367,23 +396,31 @@ async fn handle_proxy(mut inbound: TcpStream, options: Arc<Options>) {
                         Ok(0) => continue,
                         Ok(n) => {
                             // 查找匹配的记录
-                            let records = PLAYBACK_SERVICE.get_recent_records(None).await;
-                            for record in records {
-                                if record.protocol == crate::model::Protocol::TCP {
-                                    // 回放请求
-                                    if !record.request.body.is_empty() {
-                                        if let Err(e) = wo.write_all(&record.request.body).await {
-                                            error!("Failed to playback request: {}", e);
-                                            break;
+                            match get_playback_service().await {
+                                Ok(playback_service) => {
+                                    let records = playback_service.get_recent_records(None).await;
+                                    for record in records {
+                                        if record.protocol == crate::model::Protocol::TCP {
+                                            // 回放请求
+                                            if !record.request.body.is_empty() {
+                                                if let Err(e) = wo.write_all(&record.request.body).await {
+                                                    error!("Failed to playback request: {}", e);
+                                                    break;
+                                                }
+                                            }
+                                            // 回放响应
+                                            if !record.response.body.is_empty() {
+                                                if let Err(e) = wi.write_all(&record.response.body).await {
+                                                    error!("Failed to playback response: {}", e);
+                                                    break;
+                                                }
+                                            }
                                         }
                                     }
-                                    // 回放响应
-                                    if !record.response.body.is_empty() {
-                                        if let Err(e) = wi.write_all(&record.response.body).await {
-                                            error!("Failed to playback response: {}", e);
-                                            break;
-                                        }
-                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to get playback service: {}", e);
+                                    break;
                                 }
                             }
                         }

@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::collections::HashMap;
 
 use crate::errors::Error;
 
@@ -11,6 +12,7 @@ pub struct Options {
     pub peer: Option<PeerOptions>,
     pub service_discovery: ServiceDiscoveryOptions,
     pub logging: LoggingOptions,
+    pub redis: RedisOptions,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -58,37 +60,40 @@ pub struct ServiceDiscoveryOptions {
 pub enum ServiceDiscoveryProvider {
     #[serde(rename = "static")]
     Static,
-    #[serde(rename = "consul")]
-    Consul,
+    #[serde(rename = "zookeeper")]
+    Zookeeper,
     #[serde(rename = "kubernetes")]
     Kubernetes,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServiceDiscoveryConfig {
-    pub static_services: Option<Vec<StaticService>>,
-    pub consul: Option<ConsulConfig>,
+    pub static_services: Option<Vec<ServiceConfig>>,
+    pub zookeeper: Option<ZookeeperConfig>, 
     pub kubernetes: Option<KubernetesConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct StaticService {
-    pub name: String,
-    pub host: String,
-    pub port: u16,
-    pub metadata: std::collections::HashMap<String, String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ConsulConfig {
-    pub address: String,
-    pub datacenter: String,
+pub struct ZookeeperConfig {
+    pub hosts: Vec<String>,
+    pub base_path: String,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct KubernetesConfig {
     pub namespace: String,
-    pub service_account_token: Option<String>,
+    pub service_account_token_path: Option<String>,
+    pub api_server: Option<String>,
+    pub label_selector: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ServiceConfig {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -115,6 +120,14 @@ pub struct LogFormatOptions {
     pub thread_id: bool,
     pub file: bool,
     pub line_number: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RedisOptions {
+    pub url: String,
+    pub pool_size: Option<u32>,
+    pub connection_timeout: Option<u64>,
+    pub retry_count: Option<u32>,
 }
 
 impl Options {

@@ -1,44 +1,50 @@
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::time;
+use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use crate::errors::Error;
 use crate::model::TrafficRecord;
 use crate::options::{Options, PeerOptions};
 use crate::playback::PlaybackService;
+use crate::PLAYBACK_SERVICE;
 
 /// 同步服务，用于同步流量记录
 /// 定时从peer拉取流量记录，并回放
 pub struct SyncService {
     options: Arc<Options>,
-    playback_service: Arc<PlaybackService>,
 }
 
 impl SyncService {
-    pub fn new(options: Options, playback_service: Arc<PlaybackService>) -> Self {
+    pub fn new(options: Options) -> Self {
         Self {
             options: Arc::new(options),
-            playback_service,
         }
     }
 
-    pub async fn start(&self) {
-        if let Some(peer) = &self.options.peer {
-            let peer = peer.clone();
-            let playback_service = self.playback_service.clone();
-            
-            tokio::spawn(async move {
-                loop {
-                    if let Err(e) = Self::sync_from_peer(&peer, playback_service.clone()).await {
-                        error!("Failed to sync from peer: {}", e);
-                    }
-                    time::sleep(Duration::from_secs(60)).await;
+    pub async fn start(&self) -> JoinHandle<()> {
+        let options = self.options.clone();
+        
+        tokio::spawn(async move {
+            loop {
+                if let Err(e) = SyncService::sync_with_peers(&options).await {
+                    error!("Sync error: {}", e);
                 }
-            });
+                // 每60秒同步一次
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            }
+        })
+    }
+
+    pub async fn abort(handle: JoinHandle<()>) {
+        handle.abort_handle().abort();
+        if let Err(e) = handle.await {
+            error!("Failed to abort sync service: {}", e);
         }
     }
 
+    /// 从peer拉取流量记录并推到回放服务
     async fn sync_from_peer(peer: &PeerOptions, playback_service: Arc<PlaybackService>) -> Result<(), Error> {
         let client = reqwest::Client::new();
         let scheme = if peer.tls { "https" } else { "http" };
@@ -56,10 +62,28 @@ impl SyncService {
             .map_err(|e| Error::Proxy(format!("Failed to parse peer response: {}", e)))?;
 
         for record in records {
-            playback_service.add_record(record).await;
+            playback_service.add_record(record.clone()).await;
         }
 
-        info!("Successfully synced traffic records from peer");
+        info!("Successfully synced and replayed traffic records from peer");
+        Ok(())
+    }
+
+    async fn sync_with_peers(options: &Arc<Options>) -> Result<(), Error> {
+        if let Some(peer) = &options.peer {
+            let peer = peer.clone();
+            
+            match PLAYBACK_SERVICE.lock().await.clone() {
+                Some(playback_service) => {
+                    if let Err(e) = SyncService::sync_from_peer(&peer, playback_service).await {
+                        error!("Failed to sync from peer: {}", e);
+                    }
+                }
+                None => {
+                    error!("Playback service is not initialized");
+                }
+            }
+        }
         Ok(())
     }
 } 

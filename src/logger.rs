@@ -7,7 +7,7 @@ use tracing_subscriber::{
 };
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
-use crate::{errors::Error, options::Options};
+use crate::{errors::Error, options::LoggingOptions};
 
 /// 初始化日志系统
 /// 
@@ -18,13 +18,13 @@ use crate::{errors::Error, options::Options};
 /// # 返回值
 /// 
 /// 返回初始化结果
-pub fn init_logger(opts: &Options) -> Result<(), Error> {
+pub fn init_logger(opts: &LoggingOptions) -> Result<(), Error> {
     // 创建日志目录
-    let log_dir = opts.logging.directory.clone();
+    let log_dir = opts.directory.clone();
     std::fs::create_dir_all(&log_dir)?;
 
     // 配置日志级别
-    let level = match opts.logging.level.to_lowercase().as_str() {
+    let level = match opts.level.to_lowercase().as_str() {
         "trace" => Level::TRACE,
         "debug" => Level::DEBUG,
         "info" => Level::INFO,
@@ -36,13 +36,13 @@ pub fn init_logger(opts: &Options) -> Result<(), Error> {
     // 配置日志轮转
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .max_log_files(opts.logging.rotation.max_files as usize)
-        .filename_prefix(&opts.logging.file_name_pattern)
+        .max_log_files(opts.rotation.max_files as usize)
+        .filename_prefix(&opts.file_name_pattern)
         .build(&log_dir)
         .map_err(|e| Error::Logger(e.to_string()))?;
 
     // 获取格式化选项
-    let format_opts = opts.logging.format.clone();
+    let format_opts = opts.format.clone();
 
     // 创建订阅者
     let file_layer = fmt::layer()
@@ -68,7 +68,7 @@ pub fn init_logger(opts: &Options) -> Result<(), Error> {
         .map_err(|e| Error::Logger(e.to_string()))?;
 
     // 如果启用了压缩，添加压缩处理
-    if opts.logging.rotation.compress {
+    if opts.rotation.compress {
         let compress_dir = log_dir.clone();
         std::thread::spawn(move || {
             loop {

@@ -20,6 +20,12 @@ pub enum Error {
 
     #[error("Request error: {0}")]
     Request(#[from] hyper_util::client::legacy::Error),
+
+    #[error("Redis error: {0}")]
+    Redis(#[from] redis::RedisError),
+
+    #[error("Service discovery error: {0}")]
+    ServiceDiscovery(String),
 }
 
 impl From<String> for Error {
@@ -31,5 +37,39 @@ impl From<String> for Error {
 impl From<&str> for Error {
     fn from(s: &str) -> Self {
         Error::Proxy(s.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::error::Error as StdError;
+
+    #[test]
+    fn test_error_display() {
+        let err = Error::ServiceDiscovery("test error".to_string());
+        assert_eq!(err.to_string(), "Service discovery error: test error");
+
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err = Error::Io(io_err);
+        assert!(err.to_string().contains("I/O error"));
+    }
+
+    #[test]
+    fn test_error_source() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err = Error::Io(io_err);
+        assert!(err.source().is_some());
+
+        let err = Error::ServiceDiscovery("test error".to_string());
+        assert!(err.source().is_none());
+    }
+
+    #[test]
+    fn test_error_conversion() {
+        let io_err = io::Error::new(io::ErrorKind::NotFound, "file not found");
+        let err: Error = io_err.into();
+        assert!(matches!(err, Error::Io(_)));
     }
 } 

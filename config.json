@@ -19,6 +19,12 @@
         "port": 8084,
         "tls": true
     },
+    "redis": {
+        "url": "redis:default:mr.xi9999@localhost:6379",
+        "pool_size": 10,
+        "connection_timeout": 5,
+        "retry_count": 3
+    },
     "logging": {
         "level": "info",
         "directory": "logs",

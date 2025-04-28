@@ -9,16 +9,8 @@ use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use crate::{
-    api,
-    errors::Error,
-    model::TrafficRecord,
-    options::{Options, ProxyMode},
-    playback::PlaybackService,
+    errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}
 };
-
-static PLAYBACK_SERVICE: once_cell::sync::Lazy<Arc<PlaybackService>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(PlaybackService::new())
-});
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let addr = format!("{}:{}", options.http.host, options.http.port);
@@ -61,6 +53,17 @@ async fn handle_request(
             let method = req.method().clone();
             let uri = req.uri().clone();
             let headers = req.headers().clone();
+            let params = uri.query()
+                .map(|s| s.split('&')
+                    .filter_map(|param| {
+                        let parts: Vec<&str> = param.split('=').collect();
+                        if parts.len() == 2 {
+                            Some((parts[0].to_string(), parts[1].to_string()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect());
             
             // 获取请求体
             let body_bytes = req.collect().await?.to_bytes();
@@ -86,6 +89,7 @@ async fn handle_request(
             let record = TrafficRecord::new_http(
                 method.to_string(),
                 uri.to_string(),
+                params,
                 headers
                     .iter()
                     .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
@@ -100,7 +104,7 @@ async fn handle_request(
             );
 
             // 保存记录
-            PLAYBACK_SERVICE.add_record(record).await;
+            get_playback_service().await?.add_record(record).await;
             
             // 构建响应
             let response = Response::from_parts(parts, Full::new(body_bytes));
@@ -108,7 +112,7 @@ async fn handle_request(
             Ok(response)
         }
         ProxyMode::Playback => {
-            Ok(PLAYBACK_SERVICE.playback(req).await)
+            Ok(get_playback_service().await?.playback(req).await)
         }
         ProxyMode::Forward => {
             // Save request info before consuming
