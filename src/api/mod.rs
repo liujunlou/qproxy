@@ -8,6 +8,7 @@ use serde_json;
 use crate::errors::Error;
 use crate::playback::PlaybackService;
 
+#[allow(dead_code)]
 pub async fn handle_sync_request(
     req: Request<hyper::body::Incoming>,
     playback_service: Arc<PlaybackService>,

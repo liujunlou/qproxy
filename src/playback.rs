@@ -264,6 +264,101 @@ impl PlaybackService {
         Ok(())
     }
 
+    /// 保存流量记录 (用于测试)
+    pub async fn save_record(&self, record: &TrafficRecord) -> Result<(), redis::RedisError> {
+        let record_clone = record.clone();
+        let mut records = self.records.write().await;
+        records.insert(record.id.clone(), record.clone());
+        
+        // 将记录保存到Redis
+        let key = format!("test:record:{}", record.id);
+        let json = serde_json::to_string(&record).unwrap();
+        self.redis.clone().set(&key, json).await?;
+        
+        Ok(())
+    }
+
+    /// 获取指定ID的流量记录 (用于测试)
+    pub async fn get_record(&self, id: &str) -> Result<TrafficRecord, redis::RedisError> {
+        // 先从Redis获取
+        let key = format!("test:record:{}", id);
+        let json: Option<String> = self.redis.clone().get(&key).await?;
+        
+        if let Some(json) = json {
+            // 将JSON反序列化为TrafficRecord
+            return Ok(serde_json::from_str(&json).unwrap());
+        }
+        
+        // 如果Redis中不存在，返回错误
+        Err(redis::RedisError::from((redis::ErrorKind::IoError, "Record not found")))
+    }
+
+    /// 列出流量记录 (用于测试)
+    pub async fn list_records(
+        &self,
+        service_name: Option<String>,
+        since: Option<SystemTime>
+    ) -> Result<Vec<TrafficRecord>, redis::RedisError> {
+        // 获取所有keys
+        let pattern = match &service_name {
+            Some(_) => "test:record:*",
+            None => "test:record:*",
+        };
+        
+        let keys: Vec<String> = self.redis.clone()
+            .keys(pattern)
+            .await?;
+        
+        let mut records = Vec::new();
+        
+        // 获取每个记录
+        for key in keys {
+            let json: String = self.redis.clone().get(&key).await?;
+            let record: TrafficRecord = serde_json::from_str(&json).unwrap();
+            
+            // 如果指定了service_name，过滤掉不匹配的记录
+            if let Some(ref name) = service_name {
+                if let Some(ref record_service) = record.request.service_name {
+                    if record_service != name {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+            }
+            
+            // 如果指定了since，过滤掉早于since的记录
+            if let Some(since_time) = since {
+                if record.timestamp < since_time {
+                    continue;
+                }
+            }
+            
+            records.push(record);
+        }
+        
+        Ok(records)
+    }
+
+    /// 删除流量记录 (用于测试)
+    pub async fn delete_record(&self, id: &str) -> Result<(), redis::RedisError> {
+        // 从Redis中删除
+        let key = format!("test:record:{}", id);
+        let exists: bool = self.redis.clone().exists(&key).await?;
+        
+        if !exists {
+            return Err(redis::RedisError::from((redis::ErrorKind::IoError, "Record not found")));
+        }
+        
+        self.redis.clone().del(&key).await?;
+        
+        // 从内存中删除
+        let mut records = self.records.write().await;
+        records.remove(id);
+        
+        Ok(())
+    }
+
     /// 清除所有流量记录
     pub async fn clear_records(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
         let key = self.get_traffic_key(peer_id, shard_id);

@@ -1,15 +1,5 @@
-//! MQTT 客户端模块
-//! 
-//! 本模块实现了一个完整的 MQTT 客户端，支持以下功能：
-//! - MQTT 3.1.1 协议
-//! - QoS 0/1/2 消息质量
-//! - 自动重连
-//! - 消息重传
-//! - 会话保持
-//! - 安全认证
-
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
@@ -489,7 +479,7 @@ impl ConnectMessage {
 
                 // Calculate verify sign from payload
                 let payload = &buf[..cursor.position() as usize - 8];
-                verify_sign = Some(DigestUtil::init_signature(payload));
+                verify_sign = Some(digest_util::init_signature(payload));
             }
         }
 
@@ -743,7 +733,7 @@ impl PublishMessage {
         let payload = Bytes::from(payload_bytes);
         
         // Calculate verify sign from payload
-        let verify_sign = Some(DigestUtil::init_signature(&payload));
+        let verify_sign = Some(digest_util::init_signature(&payload));
         
         Ok(Self {
             topic,
@@ -826,7 +816,7 @@ impl QueryMessage {
         let payload = Bytes::from(payload_bytes);
         
         // Calculate verify sign from payload
-        let verify_sign = Some(DigestUtil::init_signature(&payload));
+        let verify_sign = Some(digest_util::init_signature(&payload));
         
         Ok(Self {
             topic,
@@ -1150,12 +1140,15 @@ impl DisconnectMessage {
 }
 
 // Add DigestUtil for signature calculation
-mod DigestUtil {
-    use std::io;
-
+mod digest_util {
+    const SIGNATURE_MAX_LEN: usize = 8;
+    
     pub fn init_signature(data: &[u8]) -> Vec<u8> {
-        // TODO: Implement actual signature calculation
-        // This is a placeholder that returns a dummy signature
-        vec![0u8; 8]
+        // Simple implementation without external dependencies
+        let mut result = vec![0u8; SIGNATURE_MAX_LEN];
+        for (i, &byte) in data.iter().enumerate().take(data.len()) {
+            result[i % SIGNATURE_MAX_LEN] ^= byte;
+        }
+        result
     }
 } 

@@ -12,6 +12,9 @@ pub enum Error {
     #[error("Proxy error: {0}")]
     Proxy(String),
 
+    #[error("Service error: {0}")]
+    ServiceError(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
