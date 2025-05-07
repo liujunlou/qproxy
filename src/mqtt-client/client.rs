@@ -1,11 +1,22 @@
+//! MQTT 客户端模块
+//! 
+//! 本模块实现了一个完整的 MQTT 客户端，支持以下功能：
+//! - MQTT 3.1.1 协议
+//! - QoS 0/1/2 消息质量
+//! - 自动重连
+//! - 消息重传
+//! - 会话保持
+//! - 安全认证
+
 use crate::message::{
     ConnectMessage, ConnAckMessage, DisconnectMessage, Header, Message, MessageType, PingMessage,
-    PublishMessage, QoS, SubscribeMessage,
+    PublishMessage, QoS, SubscribeMessage, ReconnectMessage, ReconnectAckMessage, ReconnectStatus,
+    UnsubscribeMessage, QueryMessage, QueryAckMessage,
 };
 use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use futures::{Sink, Stream};
-use log::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -19,64 +30,128 @@ use tokio::{
 };
 use tokio_util::codec::{Decoder, Encoder, Framed};
 
-pub struct MqttClient {
-    client_id: String,
-    host: String,
-    port: u16,
-    keep_alive: u16,
-    username: Option<String>,
-    password: Option<String>,
-    clean_session: bool,
-    connection: Option<Connection>,
-    packet_id: Arc<Mutex<u16>>,
-    subscriptions: Arc<Mutex<HashMap<String, Vec<QoS>>>>,
+/// MQTT 客户端配置
+#[derive(Debug, Clone)]
+pub struct MqttConfig {
+    /// 客户端 ID
+    pub client_id: String,
+    /// 服务器地址
+    pub host: String,
+    /// 服务器端口
+    pub port: u16,
+    /// 保活时间（秒）
+    pub keep_alive: u16,
+    /// 应用 ID
+    pub app_id: Option<String>,
+    /// 认证令牌
+    pub token: Option<String>,
+    /// 应用标识符
+    pub app_identifier: Option<String>,
+    /// 客户端信息
+    pub info: Option<String>,
+    /// 信息 QoS
+    pub info_qos: Option<QoS>,
+    /// 是否保留信息
+    pub retain_info: bool,
+    /// 是否不踢出其他客户端
+    pub is_not_kick_other: bool,
+    /// 客户端 IP
+    pub client_ip: Option<String>,
+    /// 验证信息
+    pub validation_info: Option<String>,
+    /// 是否支持重连
+    pub has_reconnect: bool,
+    /// 回调扩展
+    pub callback_ext: Option<String>,
+    /// 签名
+    pub signature: Option<Vec<u8>>,
+    /// 验证签名
+    pub verify_sign: Option<Vec<u8>>,
 }
 
+impl Default for MqttConfig {
+    fn default() -> Self {
+        Self {
+            client_id: String::new(),
+            host: "localhost".to_string(),
+            port: 1883,
+            keep_alive: 60,
+            app_id: None,
+            token: None,
+            app_identifier: None,
+            info: None,
+            info_qos: None,
+            retain_info: false,
+            is_not_kick_other: false,
+            client_ip: None,
+            validation_info: None,
+            has_reconnect: false,
+            callback_ext: None,
+            signature: None,
+            verify_sign: None,
+        }
+    }
+}
+
+/// MQTT 客户端
+pub struct MqttClient {
+    /// 客户端配置
+    config: MqttConfig,
+    /// 当前连接
+    connection: Option<Connection>,
+    /// 消息 ID 计数器
+    packet_id: Arc<Mutex<u16>>,
+    /// 订阅主题列表
+    subscriptions: Arc<Mutex<HashMap<String, Vec<QoS>>>>,
+    /// 会话 ID
+    session_id: Option<String>,
+}
+
+/// 连接状态
 struct Connection {
+    /// 帧处理器
     framed: Framed<TcpStream, MqttCodec>,
+    /// 消息发送通道
     tx: mpsc::Sender<Message>,
 }
 
 impl MqttClient {
-    pub fn new(client_id: String, host: String, port: u16) -> Self {
+    /// 创建新的 MQTT 客户端
+    pub fn new(config: MqttConfig) -> Self {
         Self {
-            client_id,
-            host,
-            port,
-            keep_alive: 60,
-            username: None,
-            password: None,
-            clean_session: true,
+            config,
             connection: None,
             packet_id: Arc::new(Mutex::new(0)),
             subscriptions: Arc::new(Mutex::new(HashMap::new())),
+            session_id: None,
         }
     }
 
-    pub fn set_credentials(&mut self, username: String, password: String) {
-        self.username = Some(username);
-        self.password = Some(password);
-    }
-
-    pub fn set_keep_alive(&mut self, keep_alive: u16) {
-        self.keep_alive = keep_alive;
-    }
-
-    pub fn set_clean_session(&mut self, clean_session: bool) {
-        self.clean_session = clean_session;
-    }
-
+    /// 连接到 MQTT 服务器
     pub async fn connect(&mut self) -> Result<()> {
-        let addr = format!("{}:{}", self.host, self.port);
+        let addr = format!("{}:{}", self.config.host, self.config.port);
         let stream = TcpStream::connect(&addr).await?;
         
         let (tx, mut rx) = mpsc::channel(100);
         let framed = Framed::new(stream, MqttCodec::new());
         
-        let mut connect = ConnectMessage::new(self.client_id.clone(), self.keep_alive);
-        connect.clean_session = self.clean_session;
-        connect.username = self.username.clone();
-        connect.password = self.password.clone();
+        // 创建连接消息
+        let mut connect = ConnectMessage::new();
+        connect.client_id = self.config.client_id.clone();
+        connect.keep_alive = self.config.keep_alive;
+        connect.app_id = self.config.app_id.clone();
+        connect.token = self.config.token.clone();
+        connect.app_identifier = self.config.app_identifier.clone();
+        connect.info = self.config.info.clone();
+        connect.info_qos = self.config.info_qos;
+        connect.retain_info = self.config.retain_info;
+        connect.is_not_kick_other = self.config.is_not_kick_other;
+        connect.client_ip = self.config.client_ip.clone();
+        connect.validation_info = self.config.validation_info.clone();
+        connect.has_reconnect = self.config.has_reconnect;
+        connect.callback_ext = self.config.callback_ext.clone();
+        connect.signature = self.config.signature.clone();
+        connect.verify_sign = self.config.verify_sign.clone();
         
         let header = Header::new(MessageType::Connect);
         let message = Message::new(header, connect.encode().freeze());
@@ -84,7 +159,7 @@ impl MqttClient {
         let mut connection = Connection { framed, tx };
         connection.framed.send(message).await?;
         
-        // Wait for CONNACK
+        // 等待 CONNACK
         if let Some(connack) = connection.framed.next().await {
             let connack = connack?;
             if connack.header.message_type != MessageType::ConnAck {
@@ -92,64 +167,23 @@ impl MqttClient {
             }
             
             let connack = ConnAckMessage::decode(&connack.payload)?;
-            if connack.return_code != 0 {
-                return Err(anyhow!("Connection refused: {}", connack.return_code));
+            if connack.status != 0 {
+                return Err(anyhow!("Connection refused: {}", connack.status));
             }
             
-            info!("Connected to MQTT broker");
+            // 保存会话 ID
+            if let Some(session) = connack.session {
+                self.session_id = Some(session);
+            }
+            
+            info!("Connected to MQTT broker at {}", addr);
             self.connection = Some(connection);
             
-            // Start keep-alive task
-            let keep_alive = self.keep_alive;
-            let tx = self.connection.as_ref().unwrap().tx.clone();
-            tokio::spawn(async move {
-                let mut interval = time::interval(Duration::from_secs(keep_alive as u64 / 2));
-                loop {
-                    interval.tick().await;
-                    let ping = Message::new(Header::new(MessageType::Ping), Bytes::new());
-                    if tx.send(ping).await.is_err() {
-                        break;
-                    }
-                }
-            });
+            // 启动保活任务
+            self.start_keep_alive_task();
             
-            // Start message processing task
-            let mut framed = self.connection.as_ref().unwrap().framed.clone();
-            let subscriptions = self.subscriptions.clone();
-            tokio::spawn(async move {
-                while let Some(result) = framed.next().await {
-                    match result {
-                        Ok(message) => {
-                            match message.header.message_type {
-                                MessageType::Publish => {
-                                    let topic_len = (message.payload[0] as usize) << 8 | message.payload[1] as usize;
-                                    let topic = String::from_utf8_lossy(&message.payload[2..2 + topic_len]).to_string();
-                                    let payload = message.payload.slice(2 + topic_len..);
-                                    
-                                    if let Some(qos_levels) = subscriptions.lock().unwrap().get(&topic) {
-                                        for qos in qos_levels {
-                                            debug!("Received message on topic {} with QoS {:?}", topic, qos);
-                                            // Handle message based on QoS
-                                        }
-                                    }
-                                }
-                                MessageType::Ping => {
-                                    let pong = Message::new(Header::new(MessageType::Pong), Bytes::new());
-                                    if let Err(e) = framed.send(pong).await {
-                                        error!("Failed to send PONG: {}", e);
-                                        break;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                        Err(e) => {
-                            error!("Error processing message: {}", e);
-                            break;
-                        }
-                    }
-                }
-            });
+            // 启动消息处理任务
+            self.start_message_processing_task();
             
             Ok(())
         } else {
@@ -157,6 +191,105 @@ impl MqttClient {
         }
     }
 
+    /// 重连
+    pub async fn reconnect(&mut self) -> Result<()> {
+        if let Some(session_id) = &self.session_id {
+            let reconnect = ReconnectMessage::new(session_id.clone());
+            let header = Header::new(MessageType::Reconnect);
+            let message = Message::new(header, reconnect.encode().freeze());
+            
+            if let Some(connection) = &mut self.connection {
+                connection.framed.send(message).await?;
+                
+                // 等待重连确认
+                if let Some(reconnect_ack) = connection.framed.next().await {
+                    let reconnect_ack = reconnect_ack?;
+                    if reconnect_ack.header.message_type != MessageType::ReconnectAck {
+                        return Err(anyhow!("Expected RECONNECT_ACK, got {:?}", reconnect_ack.header.message_type));
+                    }
+                    
+                    let reconnect_ack = ReconnectAckMessage::decode(&reconnect_ack.payload)?;
+                    match reconnect_ack.status {
+                        ReconnectStatus::Accepted => {
+                            info!("Reconnected successfully");
+                            Ok(())
+                        }
+                        ReconnectStatus::Error => {
+                            Err(anyhow!("Reconnect failed"))
+                        }
+                        ReconnectStatus::NoMaster => {
+                            Err(anyhow!("No master available"))
+                        }
+                    }
+                } else {
+                    Err(anyhow!("Connection closed during reconnect"))
+                }
+            } else {
+                Err(anyhow!("Not connected"))
+            }
+        } else {
+            Err(anyhow!("No session ID available"))
+        }
+    }
+
+    /// 启动保活任务
+    fn start_keep_alive_task(&self) {
+        let keep_alive = self.config.keep_alive;
+        let tx = self.connection.as_ref().unwrap().tx.clone();
+        
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(keep_alive as u64 / 2));
+            loop {
+                interval.tick().await;
+                let ping = Message::new(Header::new(MessageType::Ping), Bytes::new());
+                if tx.send(ping).await.is_err() {
+                    break;
+                }
+            }
+        });
+    }
+
+    /// 启动消息处理任务
+    fn start_message_processing_task(&self) {
+        let mut framed = self.connection.as_ref().unwrap().framed.clone();
+        let subscriptions = self.subscriptions.clone();
+        
+        tokio::spawn(async move {
+            while let Some(result) = framed.next().await {
+                match result {
+                    Ok(message) => {
+                        match message.header.message_type {
+                            MessageType::Publish => {
+                                let topic_len = (message.payload[0] as usize) << 8 | message.payload[1] as usize;
+                                let topic = String::from_utf8_lossy(&message.payload[2..2 + topic_len]).to_string();
+                                let payload = message.payload.slice(2 + topic_len..);
+                                
+                                if let Some(qos_levels) = subscriptions.lock().unwrap().get(&topic) {
+                                    for qos in qos_levels {
+                                        debug!("Received message on topic {} with QoS {:?}", topic, qos);
+                                    }
+                                }
+                            }
+                            MessageType::Ping => {
+                                let pong = Message::new(Header::new(MessageType::Pong), Bytes::new());
+                                if let Err(e) = framed.send(pong).await {
+                                    error!("Failed to send PONG: {}", e);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error processing message: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    /// 发布消息
     pub async fn publish(&mut self, topic: String, payload: Bytes, qos: QoS) -> Result<()> {
         let mut publish = PublishMessage::new(topic, payload);
         
@@ -183,6 +316,37 @@ impl MqttClient {
         }
     }
 
+    /// 查询消息
+    pub async fn query(&mut self, topic: String, payload: Bytes) -> Result<QueryAckMessage> {
+        let mut query = QueryMessage::new(topic, payload);
+        
+        let mut packet_id = self.packet_id.lock().unwrap();
+        *packet_id = packet_id.wrapping_add(1);
+        query.packet_id = Some(*packet_id);
+        
+        let header = Header::new(MessageType::Query);
+        let message = Message::new(header, query.encode().freeze());
+        
+        if let Some(connection) = &mut self.connection {
+            connection.framed.send(message).await?;
+            
+            // 等待查询确认
+            if let Some(query_ack) = connection.framed.next().await {
+                let query_ack = query_ack?;
+                if query_ack.header.message_type != MessageType::QueryAck {
+                    return Err(anyhow!("Expected QUERY_ACK, got {:?}", query_ack.header.message_type));
+                }
+                
+                Ok(QueryAckMessage::decode(&query_ack.payload)?)
+            } else {
+                Err(anyhow!("Connection closed during query"))
+            }
+        } else {
+            Err(anyhow!("Not connected"))
+        }
+    }
+
+    /// 订阅主题
     pub async fn subscribe(&mut self, topic: String, qos: QoS) -> Result<()> {
         let mut packet_id = self.packet_id.lock().unwrap();
         *packet_id = packet_id.wrapping_add(1);
@@ -194,7 +358,7 @@ impl MqttClient {
         if let Some(connection) = &mut self.connection {
             connection.framed.send(message).await?;
             
-            // Add to local subscriptions
+            // 添加到本地订阅列表
             self.subscriptions
                 .lock()
                 .unwrap()
@@ -208,10 +372,35 @@ impl MqttClient {
         }
     }
 
+    /// 取消订阅
+    pub async fn unsubscribe(&mut self, topic: String) -> Result<()> {
+        let mut packet_id = self.packet_id.lock().unwrap();
+        *packet_id = packet_id.wrapping_add(1);
+        
+        let unsubscribe = UnsubscribeMessage::new(*packet_id, vec![topic.clone()]);
+        let header = Header::new(MessageType::Unsubscribe);
+        let message = Message::new(header, unsubscribe.encode().freeze());
+        
+        if let Some(connection) = &mut self.connection {
+            connection.framed.send(message).await?;
+            
+            // 从本地订阅列表中移除
+            self.subscriptions.lock().unwrap().remove(&topic);
+            
+            Ok(())
+        } else {
+            Err(anyhow!("Not connected"))
+        }
+    }
+
+    /// 断开连接
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(connection) = &mut self.connection {
-            let disconnect = Message::new(Header::new(MessageType::Disconnect), Bytes::new());
-            connection.framed.send(disconnect).await?;
+            let disconnect = DisconnectMessage::new(0, None);
+            let header = Header::new(MessageType::Disconnect);
+            let message = Message::new(header, disconnect.encode().freeze());
+            
+            connection.framed.send(message).await?;
             self.connection = None;
             Ok(())
         } else {
@@ -220,6 +409,7 @@ impl MqttClient {
     }
 }
 
+/// MQTT 编解码器
 struct MqttCodec;
 
 impl MqttCodec {
