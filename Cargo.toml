@@ -63,3 +63,11 @@ path = "tests/record_test.rs"
 [[test]]
 name = "proxy_test"
 path = "tests/proxy_test.rs"
+
+[[test]]
+name = "mqtt_test"
+path = "tests/mqtt_test.rs"
+
+[[test]]
+name = "mqtt_integration_test"
+path = "tests/mqtt_integration_test.rs"

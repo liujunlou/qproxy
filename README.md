@@ -9,6 +9,7 @@ QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流�
 - 流量录制功能
 - 流量回放功能
 - 跨可用区部署
+- MQTT 客户端支持
 
 ## 配置说明
 
@@ -72,6 +73,67 @@ QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流�
    CONFIG_PATH=/path/to/config.json ./target/release/qproxy
    ```
 
+## MQTT 客户端使用
+
+QProxy 提供了完整的 MQTT 客户端实现，支持发布、订阅和查询功能。以下是使用示例：
+
+```rust
+use qproxy::mqtt_client::{
+    client::{MqttClient, MqttConfig},
+    message::QoS,
+};
+use bytes::Bytes;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 创建 MQTT 客户端配置
+    let config = MqttConfig {
+        client_id: "my-client".to_string(),
+        host: "mqtt.example.com".to_string(),
+        port: 1883,
+        keep_alive: 60,
+        app_id: Some("my-app".to_string()),
+        token: Some("auth-token".to_string()),
+        ..Default::default()
+    };
+    
+    // 创建 MQTT 客户端
+    let mut client = MqttClient::new(config);
+    
+    // 连接到 MQTT 服务器
+    client.connect().await?;
+    
+    // 发布消息
+    let topic = "my/topic".to_string();
+    let payload = Bytes::from("Hello, MQTT!");
+    client.publish(topic, payload, QoS::AtLeastOnce).await?;
+    
+    // 订阅主题
+    client.subscribe("notifications/#".to_string(), QoS::AtMostOnce).await?;
+    
+    // 查询主题
+    let query_topic = "query/status".to_string();
+    let query_payload = Bytes::from("query data");
+    let response = client.query(query_topic, query_payload).await?;
+    
+    // 处理响应
+    println!("Query response: {:?}", response);
+    
+    // 断开连接
+    client.disconnect().await?;
+    
+    Ok(())
+}
+```
+
+MQTT 客户端支持以下主要功能：
+- 连接和断开连接
+- 消息发布（支持 QoS 0/1/2）
+- 主题订阅与取消订阅
+- 主题查询
+- 自动重连
+- 会话保持
+
 ## TLS 配置
 
 如果需要使用 TLS，请准备好证书文件：
@@ -106,6 +168,7 @@ QProxy 采用模块化设计，主要包含以下组件：
 - **sync**: 同步服务，负责在录制节点和回放节点之间同步流量数据
 - **api**: HTTP API 接口，用于查询和管理流量记录
 - **service_discovery**: 服务发现模块，用于管理下游服务地址
+- **mqtt-client**: MQTT 客户端模块，支持 MQTT 3.1.1 协议，提供消息发布、订阅和查询功能
 
 ## API 接口
 
@@ -190,14 +253,66 @@ QProxy 提供以下监控指标：
    - 确认 TLS 证书配置
    - 查看同步服务日志
 
+## 测试
+
+QProxy 提供了完整的测试用例，包括单元测试和集成测试。
+
+### 运行测试
+
+```bash
+# 运行所有测试
+cargo test
+
+# 运行特定测试
+cargo test playback_test
+cargo test proxy_test
+cargo test record_test
+cargo test mqtt_test
+cargo test mqtt_integration_test
+```
+
+### 测试依赖
+
+测试需要以下本地依赖：
+
+- Redis 服务器（用于测试回放和录制功能）
+- 确保本地 Redis 服务器在默认端口 6379 运行
+- 对于 MQTT 集成测试，需要确保本地网络端口可访问（测试将启动模拟 MQTT 服务器）
+
+### 代码覆盖率
+
+QProxy 支持生成代码覆盖率报告，以帮助识别未被测试覆盖的代码路径。
+
+#### 生成覆盖率报告
+
+我们提供了一个脚本来自动生成覆盖率报告：
+
+```bash
+# 确保脚本有执行权限
+chmod +x coverage.sh
+
+# 运行覆盖率测试
+./coverage.sh
+```
+
+这将生成 HTML 格式的覆盖率报告，并自动在浏览器中打开。报告位于 `target/coverage/html/index.html`。
+
+#### 覆盖率报告依赖
+
+生成覆盖率报告需要以下工具：
+
+- grcov（覆盖率报告生成工具，脚本会自动安装）
+- LLVM（一般与 Rust 工具链一起安装）
+
 ## 贡献指南
 
 欢迎提交 Pull Request 或 Issue。在提交代码时请注意：
 
 1. 遵循项目代码风格
 2. 添加必要的测试用例
-3. 更新相关文档
-4. 提供清晰的提交信息
+3. 确保测试覆盖率不下降
+4. 更新相关文档
+5. 提供清晰的提交信息
 
 ## 开源协议
 
