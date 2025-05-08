@@ -1,11 +1,9 @@
 pub mod http;
 pub mod tcp;
 
-use crate::model::TrafficRecord;
 use crate::options::Options;
 use crate::errors::Error;
 use std::sync::Arc;
-use tracing::error;
 use tokio::task::JoinHandle;
 
 pub struct ProxyServer {

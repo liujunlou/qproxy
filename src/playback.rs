@@ -1,12 +1,10 @@
-use crate::{model::{Protocol, TrafficRecord}, service_discovery::SERVICE_REGISTRY};
+use crate::{errors::Error, model::{Protocol, TrafficRecord}, service_discovery::SERVICE_REGISTRY};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use hyper_util::{client::legacy::{Builder, Client}, rt::TokioExecutor};
-use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::time::{SystemTime, Duration, UNIX_EPOCH};
 use tracing::{info, warn, error};
 use tokio::net::TcpStream;
@@ -16,6 +14,7 @@ use serde::{Serialize, Deserialize};
 
 const CHECKPOINT_KEY_PREFIX: &str = "qproxy:checkpoint:";
 const SYNC_LOCK_PREFIX: &str = "qproxy:sync_lock:";
+const TRAFFIC_RECORDS_PREFIX: &str = "qproxy:traffic:";
 const LOCK_EXPIRE_SECS: u64 = 300; // 5分钟锁过期时间
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,28 +47,37 @@ pub enum SyncStatus {
 #[derive(Clone)]
 pub struct PlaybackService {
     /// 存储流量记录的哈希表，使用 RwLock 保证并发安全
-    records: Arc<RwLock<HashMap<String, TrafficRecord>>>,
+    // records: Arc<RwLock<HashMap<String, TrafficRecord>>>,
     /// Tokio 执行器，用于异步任务调度
     executor: Arc<TokioExecutor>,
     /// Redis 连接管理器
-    redis: ConnectionManager,
+    redis_pool: Arc<ConnectionManager>,
 }
 
 impl PlaybackService {
-    /// 使用Redis URL创建服务实例
-    pub async fn new(redis_url: &str) -> Result<Self, redis::RedisError> {
-        let client = redis::Client::open(redis_url)?;
-        let redis = ConnectionManager::new(client).await?;
-        Self::new_with_connection(redis).await
+    /// 使用已有的Redis连接创建服务实例
+    pub async fn new(redis_pool: ConnectionManager) -> Result<Self, Error> {
+        Ok(Self {
+            executor: Arc::new(TokioExecutor::new()),
+            redis_pool: Arc::new(redis_pool),
+        })
     }
 
-    /// 使用已有的Redis连接创建服务实例
-    pub async fn new_with_connection(redis: ConnectionManager) -> Result<Self, redis::RedisError> {
+    /// 使用Redis URL创建服务实例
+    pub async fn new_with_url(redis_url: &str) -> Result<Self, Error> {
+        let client = redis::Client::open(redis_url)?;
+        let redis_pool = ConnectionManager::new(client).await?;
+
         Ok(Self {
-            records: Arc::new(RwLock::new(HashMap::new())),
+            // records: Arc::new(RwLock::new(HashMap::new())),
             executor: Arc::new(TokioExecutor::new()),
-            redis,
+            redis_pool: Arc::new(redis_pool),
         })
+    }
+
+    /// 获取流量记录的Redis key
+    fn get_traffic_key(&self, peer_id: &str, shard_id: &str) -> String {
+        format!("{}{}:{}", TRAFFIC_RECORDS_PREFIX, peer_id, shard_id)
     }
 
     /// 获取checkpoint的Redis key
@@ -82,52 +90,73 @@ impl PlaybackService {
         format!("{}{}:{}", SYNC_LOCK_PREFIX, peer_id, shard_id)
     }
 
-    /// 尝试获取同步锁
-    async fn try_acquire_sync_lock(&self, peer_id: &str, shard_id: &str) -> Result<bool, redis::RedisError> {
-        let lock_key = self.get_lock_key(peer_id, shard_id);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-        let expire_at = now + LOCK_EXPIRE_SECS;
-
-        // 使用 SETNX 设置锁
-        let acquired: bool = self.redis.clone()
-            .set_nx(&lock_key, expire_at.to_string()).await?;
-
-        if acquired {
-            // 设置过期时间
-            self.redis.clone()
-                .expire(&lock_key, LOCK_EXPIRE_SECS as i64).await?;
-        }
-
+    /// 获取同步锁
+    pub async fn acquire_sync_lock(&self, peer_id: &str, shard_id: &str) -> Result<bool, Error> {
+        let key = self.get_lock_key(peer_id, shard_id);
+        let mut conn = self.redis_pool.as_ref().clone();
+        let acquired: bool = redis::cmd("SET")
+            .arg(&key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(LOCK_EXPIRE_SECS)
+            .query_async(&mut conn)
+            .await?;
         Ok(acquired)
     }
 
     /// 释放同步锁
-    async fn release_sync_lock(&self, peer_id: &str, shard_id: &str) -> Result<(), redis::RedisError> {
-        let lock_key = self.get_lock_key(peer_id, shard_id);
-        self.redis.clone().del(&lock_key).await?;
+    pub async fn release_sync_lock(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
+        let key = self.get_lock_key(peer_id, shard_id);
+        let mut conn = self.redis_pool.as_ref().clone();
+        redis::cmd("DEL")
+            .arg(&key)
+            .query_async(&mut conn)
+            .await?;
         Ok(())
     }
 
     /// 更新同步位点
-    pub async fn update_checkpoint(&self, checkpoint: CheckpointInfo) -> Result<(), redis::RedisError> {
+    pub async fn update_checkpoint(&self, checkpoint: &CheckpointInfo) -> Result<(), Error> {
         let key = self.get_checkpoint_key(&checkpoint.peer_id, &checkpoint.shard_id);
         let json = serde_json::to_string(&checkpoint).unwrap();
-        self.redis.clone().set(&key, json).await?;
+        let mut conn = self.redis_pool.as_ref().clone();
+        conn.set(&key, json).await?;
         Ok(())
     }
 
     /// 获取同步位点
-    pub async fn get_checkpoint(&self, peer_id: &str, shard_id: &str) -> Result<Option<CheckpointInfo>, redis::RedisError> {
+    pub async fn get_checkpoint(&self, peer_id: &str, shard_id: &str) -> Result<Option<CheckpointInfo>, Error> {
         let key = self.get_checkpoint_key(peer_id, shard_id);
-        let json: Option<String> = self.redis.clone().get(&key).await?;
+        // 拉取同步记录
+        let mut conn = self.redis_pool.as_ref().clone();
+        let json: Option<String> = conn.get(&key).await?;
         
-        Ok(json.map(|j| serde_json::from_str(&j).unwrap()))
+        match json {
+            Some(j) => {
+                match serde_json::from_str::<CheckpointInfo>(&j) {
+                    Ok(checkpoint) => {
+                        if checkpoint.status == SyncStatus::Pending {
+                            Ok(Some(checkpoint))
+                        } else {
+                            // 如果同步状态为InProgress，说明有节点正在同步数据，则跳过
+                            Ok(None)
+                        }
+                    },
+                    Err(e) => {
+                        error!("get checkpoint failed: {:?}", e);
+                        Err(Error::Json(e))
+                    }
+                }
+            },
+            None => Ok(None)
+        }
     }
 
     /// 开始同步流程
-    pub async fn start_sync(&self, peer_id: &str, shard_id: &str) -> Result<bool, redis::RedisError> {
+    pub async fn start_sync(&self, peer_id: &str, shard_id: &str) -> Result<bool, Error> {
         // 尝试获取锁
-        if !self.try_acquire_sync_lock(peer_id, shard_id).await? {
+        if !self.acquire_sync_lock(peer_id, shard_id).await? {
             return Ok(false);
         }
 
@@ -145,13 +174,13 @@ impl PlaybackService {
 
         // 更新状态为进行中
         checkpoint.status = SyncStatus::InProgress;
-        self.update_checkpoint(checkpoint).await?;
-
+        self.update_checkpoint(&checkpoint).await?;
+        info!("acquire sync lock: {}_{}", peer_id, shard_id);
         Ok(true)
     }
 
     /// 完成同步流程
-    pub async fn complete_sync(&self, peer_id: &str, shard_id: &str, success: bool, error_msg: Option<String>) -> Result<(), redis::RedisError> {
+    pub async fn complete_sync(&self, peer_id: &str, shard_id: &str, success: bool, error_msg: Option<String>) -> Result<(), Error> {
         let mut checkpoint = match self.get_checkpoint(peer_id, shard_id).await? {
             Some(cp) => cp,
             None => {
@@ -172,7 +201,7 @@ impl PlaybackService {
         }
 
         // 更新checkpoint
-        self.update_checkpoint(checkpoint).await?;
+        self.update_checkpoint(&checkpoint).await?;
 
         // 释放锁
         self.release_sync_lock(peer_id, shard_id).await?;
@@ -188,69 +217,89 @@ impl PlaybackService {
     /// 
     /// # 返回值
     /// 返回需要同步的记录列表
-    pub async fn get_records_for_sync(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, redis::RedisError> {
+    pub async fn get_records_for_sync(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, Error> {
         let checkpoint = self.get_checkpoint(peer_id, shard_id).await?;
-        let records = self.records.read().await;
+        let key = self.get_traffic_key(peer_id, shard_id);
         
         let since = checkpoint.as_ref()
             .map(|cp| UNIX_EPOCH + Duration::from_secs(cp.last_sync_time))
             .unwrap_or_else(|| SystemTime::now() - Duration::from_secs(3600));
-
-        let mut new_records: Vec<TrafficRecord> = records.values()
-            .filter(|record| {
+        
+        let min_score = since.duration_since(UNIX_EPOCH)?.as_secs() as f64;
+        
+        let mut conn = self.redis_pool.as_ref().clone();
+        // 获取需要同步的记录，todo 减少时间范围
+        let records: Vec<String> = conn.zrangebyscore(&key, min_score, "+inf").await?;
+        
+        let mut result = Vec::new();
+        for json in records {
+            if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
                 if let Some(cp) = &checkpoint {
-                    record.timestamp > since && record.id != cp.last_record_id
-                } else {
-                    record.timestamp > since
+                    if record.timestamp >= since && record.id != cp.last_record_id {
+                        result.push(record);
+                    }
                 }
-            })
-            .cloned()
-            .collect();
-
+            }
+        }
+        
         // 按时间戳排序
-        new_records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-        Ok(new_records)
+        result.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        Ok(result)
     }
 
     /// 添加新的流量记录
     /// 
     /// # 参数
     /// * `record` - 要添加的流量记录
-    pub async fn add_record(&self, record: TrafficRecord) {
-        let record_clone = record.clone();
-        let mut records = self.records.write().await;
-        records.insert(record.id.clone(), record);
+    pub async fn add_record(&self, record: TrafficRecord) -> Result<(), Error> {
+        let key = self.get_traffic_key(&record.peer_id, "default");
+        let json = serde_json::to_string(&record)?;
+        let score = record.timestamp.duration_since(UNIX_EPOCH)?.as_secs() as f64;
+        
+        let mut conn = self.redis_pool.as_ref().clone();
+        conn.zadd(&key, &json, score).await?;
         
         // 触发回放
-        self.trigger_replay(&record_clone).await;
+        self.trigger_replay(&record).await;
+        Ok(())
     }
 
     /// 清除所有流量记录
-    pub async fn clear_records(&self) {
-        let mut records = self.records.write().await;
-        records.clear();
+    pub async fn clear_records(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
+        let key = self.get_traffic_key(peer_id, shard_id);
+        let mut conn = self.redis_pool.as_ref().clone();
+        conn.del(&key).await?;
+        Ok(())
     }
 
     /// 查找匹配的流量记录
     /// 
     /// # 参数
     /// * `req` - HTTP 请求
+    /// * `peer_id` - 对等节点标识
+    /// * `shard_id` - 分片标识
     /// 
     /// # 返回值
     /// 返回匹配的流量记录（如果找到）
-    pub async fn find_matching_record<B>(&self, req: &Request<B>) -> Option<TrafficRecord>
+    pub async fn find_matching_record<B>(&self, req: &Request<B>, peer_id: &str, shard_id: &str) -> Result<Option<TrafficRecord>, Error>
     where
         B: Body,
     {
-        let records = self.records.read().await;
+        let key = self.get_traffic_key(peer_id, shard_id);
+        let mut conn = self.redis_pool.as_ref().clone();
+        let records: Vec<String> = conn.zrange(&key, 0, -1).await?;
         
-        records.values()
-            .find(|record| {
-                matches!(record.protocol, Protocol::HTTP | Protocol::HTTPS)
+        for json in records {
+            if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
+                if matches!(record.protocol, Protocol::HTTP | Protocol::HTTPS)
                     && record.request.method.as_ref() == Some(&req.method().to_string())
                     && record.request.service_name.as_ref() == Some(&req.uri().to_string())
-            })
-            .cloned()
+                {
+                    return Ok(Some(record));
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// 回放流量
@@ -270,7 +319,29 @@ impl PlaybackService {
     where
         B: Body,
     {
-        if let Some(record) = self.find_matching_record(&req).await {
+        let (parts, body) = req.into_parts();
+        let body_bytes = match body.collect().await {
+            Ok(body) => body.to_bytes(),
+            Err(_) => {
+                error!("Failed to collect request body");
+                return Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .body(Full::new(Bytes::from("Failed to collect request body")))
+                    .unwrap();
+            }
+        };
+        let record: TrafficRecord = match serde_json::from_slice(&body_bytes) {
+            Ok(record) => record,
+            Err(e) => {
+                error!("Failed to parse request body: {}", e);
+                return Response::builder()
+                    .status(StatusCode::BAD_REQUEST)
+                    .body(Full::new(Bytes::from("Failed to parse request body")))
+                    .unwrap();
+            },
+        };
+        let req = Request::from_parts(parts, Full::new(body_bytes));
+        if let Ok(Some(record)) = self.find_matching_record(&req, &record.peer_id, "default").await {
             // 尝试查找本地服务
             if let Some(service_name) = record.request.service_name.as_ref() {
                 match SERVICE_REGISTRY.read().await.find_local_service(service_name).await {
@@ -282,7 +353,8 @@ impl PlaybackService {
                         // 根据协议类型选择回放方式
                         match record.protocol {
                             Protocol::TCP => {
-                                // TCP 协议回放
+                                // TCP 协议回放 TODO: 增加鉴权流程
+                                // 维护连接池，复用连接
                                 match TcpStream::connect(&addr).await {
                                     Ok(mut stream) => {
                                         // 发送请求数据到本地服务
@@ -418,29 +490,51 @@ impl PlaybackService {
     /// 获取最近的流量记录
     /// 
     /// # 参数
+    /// * `peer_id` - 对等节点标识
+    /// * `shard_id` - 分片标识
     /// * `since` - 起始时间点，如果为 None 则默认获取最近一小时的记录
     /// 
     /// # 返回值
     /// 返回指定时间段内的流量记录列表
-    pub async fn get_recent_records(&self, since: Option<SystemTime>) -> Vec<TrafficRecord> {
-        let records = self.records.read().await;
+    pub async fn get_recent_records(&self, peer_id: &str, shard_id: &str, since: Option<SystemTime>) -> Result<Vec<TrafficRecord>, Error> {
+        let key = self.get_traffic_key(peer_id, shard_id);
         let since = since.unwrap_or_else(|| {
             SystemTime::now() - Duration::from_secs(3600) // 默认获取最近一小时的记录
         });
-
-        records.values()
-            .filter(|record| record.timestamp >= since)
-            .cloned()
-            .collect()
+        let min_score = since.duration_since(UNIX_EPOCH)?.as_secs() as f64;
+        
+        let mut conn = self.redis_pool.as_ref().clone();
+        let records: Vec<String> = conn.zrangebyscore(&key, min_score, "+inf").await?;
+        
+        let mut result = Vec::new();
+        for json in records {
+            if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
+                result.push(record);
+            }
+        }
+        Ok(result)
     }
 
     /// 获取所有流量记录
     /// 
+    /// # 参数
+    /// * `peer_id` - 对等节点标识
+    /// * `shard_id` - 分片标识
+    /// 
     /// # 返回值
     /// 返回所有存储的流量记录列表
-    pub async fn get_all_records(&self) -> Vec<TrafficRecord> {
-        let records = self.records.read().await;
-        records.values().cloned().collect()
+    pub async fn get_all_records(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, Error> {
+        let key = self.get_traffic_key(peer_id, shard_id);
+        let mut conn = self.redis_pool.as_ref().clone();
+        let records: Vec<String> = conn.zrange(&key, 0, -1).await?;
+        
+        let mut result = Vec::new();
+        for json in records {
+            if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
+                result.push(record);
+            }
+        }
+        Ok(result)
     }
 
     /// 同步来自peer的记录
@@ -449,7 +543,7 @@ impl PlaybackService {
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
     /// * `records` - 要同步的记录列表
-    pub async fn sync_from_peer(&self, peer_id: &str, shard_id: &str, records: Vec<TrafficRecord>) -> Result<(), redis::RedisError> {
+    pub async fn sync_from_peer(&self, peer_id: &str, shard_id: &str, records: Vec<TrafficRecord>) -> Result<(), Error> {
         if records.is_empty() {
             return Ok(());
         }
@@ -474,7 +568,7 @@ impl PlaybackService {
 
             // 添加所有记录
             for record in sorted_records.clone() {
-                self.add_record(record.clone()).await;
+                self.add_record(record.clone()).await?;
             }
 
             // 更新checkpoint
@@ -487,13 +581,13 @@ impl PlaybackService {
                 retry_count: 0,
                 error_message: None,
             };
-            self.update_checkpoint(checkpoint).await?;
+            self.update_checkpoint(&checkpoint).await?;
 
-            Ok::<_, redis::RedisError>(())
+            Ok::<(), Error>(())
         }.await;
 
         match result {
-            Ok(_) => {
+            Ok(()) => {
                 self.complete_sync(peer_id, shard_id, true, None).await?;
                 info!("Successfully synced records from peer: {}, shard: {}", peer_id, shard_id);
             }
@@ -507,8 +601,8 @@ impl PlaybackService {
     }
 
     /// 获取所有同步位点信息
-    pub async fn get_all_checkpoints(&self) -> Result<Vec<CheckpointInfo>, redis::RedisError> {
-        let mut conn = self.redis.clone();
+    pub async fn get_all_checkpoints(&self) -> Result<Vec<CheckpointInfo>, Error> {
+        let mut conn = self.redis_pool.as_ref().clone();
         let pattern = format!("{}*", CHECKPOINT_KEY_PREFIX);
         let keys: Vec<String> = conn.keys(&pattern).await?;
         
@@ -540,6 +634,7 @@ impl PlaybackService {
 
                     match record.protocol {
                         Protocol::TCP => {
+                            // TODO 这里完成 MQTT connect和流量回放
                             if let Ok(mut stream) = TcpStream::connect(&addr).await {
                                 if let Err(e) = stream.write_all(&record.request.body).await {
                                     warn!("Failed to replay TCP traffic: {}", e);
@@ -561,6 +656,7 @@ impl PlaybackService {
                                 .method(record.request.method.as_ref().unwrap_or(&"GET".to_string()).as_str())
                                 .uri(&local_url);
 
+                            // TODO 确认录制流量是否带有鉴权信息
                             let local_req = if let Some(headers) = &record.request.headers {
                                 let mut builder = local_req;
                                 for (name, value) in headers {
@@ -600,7 +696,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_record_storage_and_retrieval() {
-        let service = PlaybackService::new("redis://localhost:6379").await.unwrap();
+        // 创建Redis客户端
+        let client = redis::Client::open("redis://localhost:6379").unwrap();
+        let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
+
+        let service = PlaybackService::new(redis_pool).await.unwrap();
         let record = TrafficRecord::new_http(
             "GET".to_string(),
             "http://test-service/api/test".to_string(),
@@ -612,7 +712,7 @@ mod tests {
             b"response body".to_vec(),
         );
 
-        service.add_record(record.clone()).await;
+        service.add_record(record.clone()).await.unwrap();
         
         let req = Request::builder()
             .method("GET")
@@ -620,7 +720,7 @@ mod tests {
             .body(Full::new(Bytes::from("")))
             .unwrap();
 
-        let found_record = service.find_matching_record(&req).await.unwrap();
+        let found_record = service.find_matching_record(&req, &record.peer_id, "default").await.unwrap().unwrap();
         assert_eq!(found_record.request.method, Some("GET".to_string()));
         assert_eq!(found_record.request.service_name, Some("http://test-service/api/test".to_string()));
     }
@@ -636,7 +736,11 @@ mod tests {
         };
         SERVICE_REGISTRY.write().await.register(instance).await;
 
-        let service = PlaybackService::new("redis://localhost:6379").await.unwrap();
+        // 创建Redis客户端
+        let client = redis::Client::open("redis://localhost:6379").unwrap();
+        let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
+
+        let service = PlaybackService::new(redis_pool).await.unwrap();
         let record = TrafficRecord::new_http(
             "GET".to_string(),
             "http://test-service/api/test".to_string(),
@@ -648,7 +752,7 @@ mod tests {
             b"recorded response".to_vec(),
         );
 
-        service.add_record(record.clone()).await;
+        service.add_record(record.clone()).await.unwrap();
 
         let req = Request::builder()
             .method("GET")
@@ -662,13 +766,18 @@ mod tests {
 
     #[tokio::test]
     async fn test_recent_records_filtering() {
-        let service = PlaybackService::new("redis://localhost:6379").await.unwrap();
+        // 创建Redis客户端
+        let client = redis::Client::open("redis://localhost:6379").unwrap();
+        let redis_pool = redis::aio::ConnectionManager::new(client).await.unwrap();
+
+        let service = PlaybackService::new(redis_pool).await.unwrap();
         let now = SystemTime::now();
         let old_time = now - Duration::from_secs(7200); // 2小时前
 
         // 添加一个旧记录
         let old_record = TrafficRecord {
             id: "old".to_string(),
+            peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
             timestamp: old_time,
             request: RequestData {
@@ -688,6 +797,7 @@ mod tests {
         // 添加一个新记录
         let new_record = TrafficRecord {
             id: "new".to_string(),
+            peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
             timestamp: now,
             request: RequestData {
@@ -704,11 +814,11 @@ mod tests {
             },
         };
 
-        service.add_record(old_record.clone()).await;
-        service.add_record(new_record.clone()).await;
+        service.add_record(old_record.clone()).await.unwrap();
+        service.add_record(new_record.clone()).await.unwrap();
 
         // 获取最近1小时的记录
-        let recent_records = service.get_records_for_sync("test", "default").await.unwrap();
+        let recent_records = service.get_recent_records("test", "default", Some(now - Duration::from_secs(3600))).await.unwrap();
         assert_eq!(recent_records.len(), 1);
         assert_eq!(recent_records[0].id, "new");
     }

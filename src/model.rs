@@ -4,6 +4,7 @@ use std::time::SystemTime;
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrafficRecord {
     pub id: String,
+    pub peer_id: String,
     pub protocol: Protocol,
     pub timestamp: SystemTime,
     pub request: RequestData,
@@ -46,11 +47,12 @@ impl TrafficRecord {
     ) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            peer_id: service_name.clone(),
             protocol: Protocol::HTTP,
             timestamp: SystemTime::now(),
             request: RequestData {
                 method: Some(method),
-                service_name: Some(service_name),
+                service_name: Some(service_name.clone()),
                 params: params,
                 headers: Some(request_headers),
                 body: request_body,
@@ -63,14 +65,15 @@ impl TrafficRecord {
         }
     }
 
-    pub fn new_tcp(request_data: Vec<u8>, response_data: Vec<u8>) -> Self {
+    pub fn new_tcp(service_name: &str, request_data: Vec<u8>, response_data: Vec<u8>) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
+            peer_id: service_name.to_string(),
             protocol: Protocol::TCP,
             timestamp: SystemTime::now(),
             request: RequestData {
                 method: None,
-                service_name: Some("IM".to_string()),
+                service_name: Some(service_name.to_string()),
                 params: None,
                 headers: None,
                 body: request_data,

@@ -5,6 +5,7 @@
         "downstream": "http://localhost:8081"
     },
     "tcp": {
+        "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
         "downstream": ["localhost:8083"],
@@ -14,13 +15,17 @@
         }
     },
     "mode": "Record",
+    "sync": {
+        "enabled": false,
+        "shards": 1
+    },
     "peer": {
         "host": "127.0.0.1",
         "port": 8084,
         "tls": true
     },
     "redis": {
-        "url": "redis:default:mr.xi9999@localhost:6379",
+        "url": "redis://default:mr.xi9999@localhost:6379",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3
@@ -28,7 +33,7 @@
     "logging": {
         "level": "info",
         "directory": "logs",
-        "file_name_pattern": "qproxy-%Y-%m-%d.log",
+        "file_name_pattern": "qproxy_",
         "rotation": {
             "max_size_mb": 100,
             "max_files": 10,

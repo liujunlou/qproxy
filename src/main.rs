@@ -66,7 +66,7 @@ pub async fn init_playback_service(options: &Options) -> Result<(), Error> {
         // 创建连接管理器
         match redis::aio::ConnectionManager::new(client).await {
             Ok(conn_manager) => {
-                match PlaybackService::new_with_connection(conn_manager).await {
+                match PlaybackService::new(conn_manager).await {
                     Ok(playback_service) => {
                         *service = Some(Arc::new(playback_service));
                         info!("Successfully initialized playback service with Redis at {}", redis_url);
@@ -74,7 +74,7 @@ pub async fn init_playback_service(options: &Options) -> Result<(), Error> {
                     }
                     Err(e) => {
                         error!("Failed to create playback service: {}", e);
-                        Err(Error::Redis(e))
+                        Err(e)
                     }
                 }
             }
@@ -148,8 +148,11 @@ async fn main() -> Result<(), Error> {
     SERVICE_REGISTRY.write().await.init(&options).await?;
     
     // 创建同步服务
-    let sync_service = sync::SyncService::new((*options).clone());
-    let sync_handle = sync_service.start().await;
+    let mut sync_handle = None;
+    if options.sync.clone().enabled {
+        let sync_service = sync::SyncService::new((*options).clone())?;
+        sync_handle = Some(sync_service.start().await);
+    }
 
     // 初始化回放服务
     init_playback_service(&options).await?;
@@ -165,7 +168,11 @@ async fn main() -> Result<(), Error> {
     info!("shutting down services...");
     
     // 关闭同步服务
-    sync::SyncService::abort(sync_handle).await;
+    if options.sync.clone().enabled {
+        if let Some(handle) = sync_handle {
+            sync::SyncService::abort(handle).await;
+        }
+    }
 
     // 关闭代理服务器
     server.abort(http_handle, tcp_handle).await;

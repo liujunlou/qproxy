@@ -5,14 +5,9 @@ use tokio::{
 };
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info};
-use uuid::Uuid;
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::TokioExecutor;
-use bytes::Bytes;
-use http_body_util::Full;
 
 use crate::{
-    errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}, playback::PlaybackService
+    errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}
 };
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
@@ -32,7 +27,12 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
             tokio::task::spawn(async move {
                 if let Ok(upstream) = tls_acceptor.accept(stream).await {
                     // 透传请求流量
-                    handle_tcp_proxy(upstream, options).await;
+                    match handle_tcp_proxy(upstream, options).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to handle TCP proxy: {:?}", e);
+                        }
+                    };
                 } else {
                     error!("failed to accept TLS connection");
                 }
@@ -40,440 +40,173 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
         } else {
             tokio::task::spawn(async move {
                 // 透传请求流量
-                handle_proxy(stream, options).await;
+                match handle_proxy(stream, options).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        error!("Failed to handle TCP proxy: {:?}", e);
+                    }
+                };
             });
         }
     }
 }
 
-async fn handle_tcp_proxy(mut inbound: TlsStream<TcpStream>, options: Arc<Options>) {
-    let downstream_addrs = &options.tcp.downstream;
-    if downstream_addrs.is_empty() {
-        error!("No downstream address configured");
-        return;
-    }
-    
-    // 选择第一个下游地址
-    let addr = &downstream_addrs[0];
-    
-    // 连接下游服务器
-    if let Ok(mut outbound) = TcpStream::connect(addr).await {
-        let (mut ri, mut wi) = tokio::io::split(inbound);
-        let (mut ro, mut wo) = tokio::io::split(outbound);
-
-        match options.mode {
-            ProxyMode::Record => {
-                // 记录上行流量，并包装成 TrafficRecord 透传到另一个可用区
-                let client_to_server = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ri.read(&mut buffer).await {
-                            Ok(0) => continue, // EOF
-                            Ok(n) => {
-                                match wo.write_all(&buffer[..n]).await {
-                                    Ok(_) => {
-                                        // 记录上行流量
-                                        let record = TrafficRecord::new_tcp(
-                                            buffer[..n].to_vec(),
-                                            vec![],
-                                        );
-                                        match get_playback_service().await {
-                                            Ok(playback_service) => {
-                                                playback_service.add_record(record.clone()).await;
-                                                info!("Recorded {} bytes of upstream traffic", n);
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to get playback service: {}", e);
-                                            }
-                                        }
-
-                                        // 如果配置了peer，则转发到peer
-                                        if let Some(peer) = &options.peer {
-                                            let scheme = if peer.tls { "https" } else { "http" };
-                                            let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
-                                            
-                                            let client = reqwest::Client::new();
-                                            if let Err(e) = client.post(&url)
-                                                .json(&record)
-                                                .send()
-                                                .await
-                                            {
-                                                error!("Failed to forward traffic record to peer: {}", e);
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("failed to write to downstream {:?}", e);
-                                        // 关闭连接
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from client: {:?}", e);
-                                break;
-                            }
-                        }
+async fn handle_tcp_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) -> Result<(), Error> {
+    let (mut ri, mut wi) = tokio::io::split(inbound);
+    let mut buffer = [0u8; 8192];
+    // 判断是录制的流量还是回放的流量
+    match options.mode {
+        ProxyMode::Record => {
+            // 记录上行流量，并包装成 TrafficRecord 进行缓存
+            loop {
+                match ri.read(&mut buffer).await {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
+                        // 写入缓存
+                        let playback_service = get_playback_service().await?;
+                        playback_service.add_record(record).await?;
                     }
-                };
-
-                let server_to_client = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ro.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                match wi.write_all(&buffer[..n]).await {
-                                    Ok(_) => {
-                                        // 记录下行流量
-                                        let record = TrafficRecord::new_tcp(
-                                            vec![],
-                                            buffer[..n].to_vec(),
-                                        );
-                                        // todo 检查返回的响应处理
-                                        match get_playback_service().await {
-                                            Ok(playback_service) => {
-                                                playback_service.add_record(record.clone()).await;
-                                                info!("Recorded {} bytes of downstream traffic", n);
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to get playback service: {}", e);
-                                            }
-                                        }
-
-                                        // 如果配置了peer，则转发到peer
-                                        if let Some(peer) = &options.peer {
-                                            let scheme = if peer.tls { "https" } else { "http" };
-                                            let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
-                                            
-                                            let client = reqwest::Client::new();
-                                            if let Err(e) = client.post(&url)
-                                                .json(&record)
-                                                .send()
-                                                .await
-                                            {
-                                                error!("Failed to forward traffic record to peer: {}", e);
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("failed to write to downstream {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from downstream: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                };
-
-                // 同时处理双向数据流
-                let _ = tokio::join!(client_to_server, server_to_client);
-            }
-            ProxyMode::Playback => {
-                // 从本地回放服务获取记录并回放
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match ri.read(&mut buffer).await {
-                        Ok(0) => continue,
-                        Ok(n) => {
-                            // 查找匹配的记录
-                            match get_playback_service().await {
-                                Ok(playback_service) => {
-                                    let records = playback_service.get_recent_records(None).await;
-                                    for record in records {
-                                        if record.protocol == crate::model::Protocol::TCP {
-                                            // 回放请求
-                                            if !record.request.body.is_empty() {
-                                                if let Err(e) = wo.write_all(&record.request.body).await {
-                                                    error!("Failed to playback request: {}", e);
-                                                    break;
-                                                }
-                                            }
-                                            // 回放响应
-                                            if !record.response.body.is_empty() {
-                                                if let Err(e) = wi.write_all(&record.response.body).await {
-                                                    error!("Failed to playback response: {}", e);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to get playback service: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to read from client: {:?}", e);
-                            break;
-                        }
+                    Err(e) => {
+                        error!("Failed to read from client: {:?}", e);
+                        break;
                     }
                 }
             }
-            ProxyMode::Forward => {
-                // 双向转发数据
-                let client_to_server = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ri.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                if let Err(e) = wo.write_all(&buffer[..n]).await {
-                                    error!("Failed to write to downstream: {:?}", e);
-                                    break;
-                                }
+        }
+        ProxyMode::Forward => {
+            // 双向转发数据
+            loop {
+                match ri.read(&mut buffer).await {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        // 1. 将流量包装成 TrafficRecord 对象
+                        let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
+                        // TODO 优化http客户端，通过客户端池进行复用
+                        let downstream_addr = &options.tcp.downstream;
+                        if downstream_addr.is_empty() {
+                            error!("No downstream address configured");
+                            return Err(Error::Config("No downstream address configured".to_string()));
+                        }
+                        
+                        // 选择第一个下游地址，TODO 这里需要根据流量来源选择下游地址
+                        let addr = &downstream_addr[0];
+
+                        // 2. 转HTTP POST /sync请求
+                        let client = reqwest::Client::new();
+                        let url = format!("http://{}/sync", addr);
+                        let response = client.post(&url)
+                            .json(&record)
+                            .send()
+                            .await?;
+
+                        // 4. 接收下游返回的响应 TrafficRecord，解析成原始流量
+                        let record_bytes = response.bytes().await?;
+                        let record: TrafficRecord = serde_json::from_slice(&record_bytes)?;
+                        // 5. 将原始流量进行响应
+                        match wi.write_all(&record.response.body).await {
+                            Ok(_) => {
+                                info!("Forwarded {} bytes of upstream traffic", n);
                             }
                             Err(e) => {
-                                error!("Failed to read from client: {:?}", e);
+                                error!("Failed to write to upstream: {:?}", e);
                                 break;
                             }
                         }
                     }
-                };
-
-                let server_to_client = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ro.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                if let Err(e) = wi.write_all(&buffer[..n]).await {
-                                    error!("Failed to write to client: {:?}", e);
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from downstream: {:?}", e);
-                                break;
-                            }
-                        }
+                    Err(e) => {
+                        error!("Failed to read from client: {:?}", e);
+                        break;
                     }
-                };
-
-                // 同时处理双向数据流
-                let _ = tokio::join!(client_to_server, server_to_client);
+                }
             }
         }
+        ProxyMode::Playback => {
+            // TCP 不需要回放
+            return Err(Error::Config("Playback mode is not supported for TCP proxy".to_string()));
+        }
     }
+    
+    Err(Error::Config("unknown proxy mode".to_string()))
 }
 
-async fn handle_proxy(mut inbound: TcpStream, options: Arc<Options>) {
-    let downstream_addrs = &options.tcp.downstream;
-    if downstream_addrs.is_empty() {
-        error!("No downstream address configured");
-        return;
-    }
-    
-    // 选择第一个下游地址
-    let addr = &downstream_addrs[0];
-    
-    // 连接下游服务器
-    if let Ok(mut outbound) = TcpStream::connect(addr).await {
-        let (mut ri, mut wi) = inbound.split();
-        let (mut ro, mut wo) = outbound.split();
+async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), Error> {
+    let (mut ri, mut wi) = tokio::io::split(inbound);
+    let mut buffer = [0u8; 8192];
 
-        match options.mode {
-            ProxyMode::Record => {
-                // 双向转发数据并记录
-                let client_to_server = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ri.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                match wo.write_all(&buffer[..n]).await {
-                                    Ok(_) => {
-                                        // 记录上行流量
-                                        let record = TrafficRecord::new_tcp(
-                                            buffer[..n].to_vec(),
-                                            vec![],
-                                        );
-                                        match get_playback_service().await {
-                                            Ok(playback_service) => {
-                                                playback_service.add_record(record.clone()).await;
-                                                info!("Recorded {} bytes of upstream traffic", n);
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to get playback service: {}", e);
-                                            }
-                                        }
-
-                                        // 如果配置了peer，则转发到peer
-                                        if let Some(peer) = &options.peer {
-                                            let scheme = if peer.tls { "https" } else { "http" };
-                                            let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
-                                            
-                                            let client = reqwest::Client::new();
-                                            if let Err(e) = client.post(&url)
-                                                .json(&record)
-                                                .send()
-                                                .await
-                                            {
-                                                error!("Failed to forward traffic record to peer: {}", e);
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("failed to write to downstream {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from client: {:?}", e);
-                                break;
-                            }
-                        }
+    // 判断是录制的流量还是回放的流量
+    match options.mode {
+        ProxyMode::Record => {
+            // 记录上行流量，并包装成 TrafficRecord 进行缓存
+            loop {
+                match ri.read(&mut buffer).await {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
+                        // 写入缓存
+                        let playback_service = get_playback_service().await?;
+                        playback_service.add_record(record).await?;
+                        // TODO 是否进行响应
                     }
-                };
-
-                let server_to_client = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ro.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                match wi.write_all(&buffer[..n]).await {
-                                    Ok(_) => {
-                                        // 记录下行流量
-                                        let record = TrafficRecord::new_tcp(
-                                            vec![],
-                                            buffer[..n].to_vec(),
-                                        );
-                                        match get_playback_service().await {
-                                            Ok(playback_service) => {
-                                                playback_service.add_record(record.clone()).await;
-                                                info!("Recorded {} bytes of downstream traffic", n);
-                                            }
-                                            Err(e) => {
-                                                error!("Failed to get playback service: {}", e);
-                                            }
-                                        }
-
-                                        // 如果配置了peer，则转发到peer
-                                        if let Some(peer) = &options.peer {
-                                            let scheme = if peer.tls { "https" } else { "http" };
-                                            let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
-                                            
-                                            let client = reqwest::Client::new();
-                                            if let Err(e) = client.post(&url)
-                                                .json(&record)
-                                                .send()
-                                                .await
-                                            {
-                                                error!("Failed to forward traffic record to peer: {}", e);
-                                            }
-                                        }
-                                    },
-                                    Err(e) => {
-                                        error!("failed to write to downstream {:?}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from downstream: {:?}", e);
-                                break;
-                            }
-                        }
-                    }
-                };
-
-                // 同时处理双向数据流
-                let _ = tokio::join!(client_to_server, server_to_client);
-            }
-            ProxyMode::Playback => {
-                // 从本地回放服务获取记录并回放
-                let mut buffer = [0u8; 8192];
-                loop {
-                    match ri.read(&mut buffer).await {
-                        Ok(0) => continue,
-                        Ok(n) => {
-                            // 查找匹配的记录
-                            match get_playback_service().await {
-                                Ok(playback_service) => {
-                                    let records = playback_service.get_recent_records(None).await;
-                                    for record in records {
-                                        if record.protocol == crate::model::Protocol::TCP {
-                                            // 回放请求
-                                            if !record.request.body.is_empty() {
-                                                if let Err(e) = wo.write_all(&record.request.body).await {
-                                                    error!("Failed to playback request: {}", e);
-                                                    break;
-                                                }
-                                            }
-                                            // 回放响应
-                                            if !record.response.body.is_empty() {
-                                                if let Err(e) = wi.write_all(&record.response.body).await {
-                                                    error!("Failed to playback response: {}", e);
-                                                    break;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    error!("Failed to get playback service: {}", e);
-                                    break;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            error!("Failed to read from client: {:?}", e);
-                            break;
-                        }
+                    Err(e) => {
+                        error!("Failed to read from client: {:?}", e);
+                        break;
                     }
                 }
             }
-            ProxyMode::Forward => {
-                // 双向转发数据
-                let client_to_server = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ri.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                if let Err(e) = wo.write_all(&buffer[..n]).await {
-                                    error!("Failed to write to downstream: {:?}", e);
-                                    break;
-                                }
+        }
+        ProxyMode::Forward => {
+            // 双向转发数据
+            loop {
+                match ri.read(&mut buffer).await {
+                    Ok(0) => continue,
+                    Ok(n) => {
+                        // 1. 将流量包装成 TrafficRecord 对象
+                        let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
+                        // TODO 优化http客户端，通过客户端池进行复用
+                        let downstream_addr = &options.tcp.downstream;
+                        if downstream_addr.is_empty() {
+                            error!("No downstream address configured");
+                            return Err(Error::Config("No downstream address configured".to_string()));
+                        }
+                        
+                        // 选择第一个下游地址，TODO 这里需要根据流量来源选择下游地址
+                        let addr = &downstream_addr[0];
+
+                        // 2. 转HTTP POST /sync请求
+                        let client = reqwest::Client::new();
+                        let url = format!("http://{}/sync", addr);
+                        let response = client.post(&url)
+                            .json(&record)
+                            .send()
+                            .await?;
+
+                        // 4. 接收下游返回的响应 TrafficRecord，解析成原始流量
+                        let record_bytes = response.bytes().await?;
+                        let record: TrafficRecord = serde_json::from_slice(&record_bytes)?;
+                        // 5. 将原始流量进行响应
+                        match wi.write_all(&record.response.body).await {
+                            Ok(_) => {
+                                info!("Forwarded {} bytes of upstream traffic", n);
                             }
                             Err(e) => {
-                                error!("Failed to read from client: {:?}", e);
+                                error!("Failed to write to upstream: {:?}", e);
                                 break;
                             }
                         }
                     }
-                };
-
-                let server_to_client = async {
-                    let mut buffer = [0u8; 8192];
-                    loop {
-                        match ro.read(&mut buffer).await {
-                            Ok(0) => continue,
-                            Ok(n) => {
-                                if let Err(e) = wi.write_all(&buffer[..n]).await {
-                                    error!("Failed to write to client: {:?}", e);
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to read from downstream: {:?}", e);
-                                break;
-                            }
-                        }
+                    Err(e) => {
+                        error!("Failed to read from client: {:?}", e);
+                        break;
                     }
-                };
-
-                // 同时处理双向数据流
-                let _ = tokio::join!(client_to_server, server_to_client);
+                }
             }
         }
+        ProxyMode::Playback => {
+            // TCP 不需要回放
+            return Err(Error::Config("Playback mode is not supported for TCP proxy".to_string()));
+        }
     }
+
+    Err(Error::Config("unknown proxy mode".to_string()))
 } 

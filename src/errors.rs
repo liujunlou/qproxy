@@ -19,13 +19,22 @@ pub enum Error {
     Http(#[from] hyper::Error),
 
     #[error("Request error: {0}")]
-    Request(#[from] hyper_util::client::legacy::Error),
+    Request(#[from] reqwest::Error),
+
+    #[error("Request error: {0}")]
+    Request2(#[from] hyper_util::client::legacy::Error),
 
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
+    #[error("JSON error: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("Service discovery error: {0}")]
     ServiceDiscovery(String),
+
+    #[error("SystemTime error: {0}")]
+    SystemTime(#[from] std::time::SystemTimeError),
 }
 
 impl From<String> for Error {

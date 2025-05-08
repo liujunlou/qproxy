@@ -13,6 +13,13 @@ pub struct Options {
     pub service_discovery: ServiceDiscoveryOptions,
     pub logging: LoggingOptions,
     pub redis: RedisOptions,
+    pub sync: SyncOptions,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SyncOptions {
+    pub enabled: bool,
+    pub shards: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -20,10 +27,12 @@ pub struct HttpOptions {
     pub host: String,
     pub port: u16,
     pub downstream: String,
+    pub filter_fields: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TcpOptions {
+    pub enabled: bool,
     pub host: String,
     pub port: u16,
     pub downstream: Vec<String>,
