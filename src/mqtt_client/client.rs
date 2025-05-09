@@ -1,368 +1,385 @@
-//! MQTT 客户端模块
-//! 
-//! 本模块实现了一个完整的 MQTT 客户端，支持以下功能：
-//! - MQTT 3.1.1 协议
-//! - QoS 0/1/2 消息质量
-//! - 自动重连
-//! - 消息重传
-//! - 会话保持
-//! - 安全认证
-
-use crate::mqtt_client::message::{
-    ConnectMessage, ConnAckMessage, DisconnectMessage, Header, Message, MessageType,
-    PublishMessage, QoS, ReconnectMessage, ReconnectAckMessage, ReconnectStatus,
-    UnsubscribeMessage, QueryMessage, QueryAckMessage,
+use super::message::{
+    ConnectMessage, ConnAckMessage, DisconnectMessage, Header, Message, MessageType, PingMessage,
+    PublishMessage, QoS, ServerPublishMessage, PubAckMessage,
 };
+use super::crypto::{self, CryptoInfo};
+use super::codec::MqttCodec;
 use anyhow::{anyhow, Result};
-use bytes::{Bytes, BytesMut, BufMut};
-use futures::{SinkExt, StreamExt};
-use tracing::{debug, error, info};
+use bytes::{Bytes, BytesMut};
+use futures::{SinkExt, StreamExt, FutureExt};
+use tracing::{debug, error, info, warn};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
-    sync::{mpsc, oneshot},
+    sync::mpsc,
     time,
 };
-use tokio_util::codec::{Decoder, Encoder, Framed};
+use tokio_util::codec::Framed;
+use uuid::Uuid;
 
-/// 自定义Subscribe消息
-struct SubscribeMessage {
+// A struct to track published messages waiting for acknowledgment
+struct OutgoingMessage {
     message_id: u16,
-    topics: Vec<(String, QoS)>,
+    topic: String,
+    qos: QoS,
+    timestamp: u64,
+    retries: u8,
+    payload: Bytes,
 }
 
-impl SubscribeMessage {
-    fn new(message_id: u16, topics: Vec<(String, QoS)>) -> Self {
-        Self { message_id, topics }
-    }
-
-    fn encode(&self) -> BytesMut {
-        let mut buf = BytesMut::new();
-        
-        // Message ID
-        buf.put_u16(self.message_id);
-        
-        // Topics with QoS
-        for (topic, qos) in &self.topics {
-            let topic_bytes = topic.as_bytes();
-            buf.put_u16(topic_bytes.len() as u16);
-            buf.extend_from_slice(topic_bytes);
-            buf.put_u8(*qos as u8);
-        }
-        
-        buf
-    }
-}
-
-/// MQTT 客户端配置
-#[derive(Debug, Clone)]
-pub struct MqttConfig {
-    /// 客户端 ID
-    pub client_id: String,
-    /// 服务器地址
-    pub host: String,
-    /// 服务器端口
-    pub port: u16,
-    /// 保活时间（秒）
-    pub keep_alive: u16,
-    /// 应用 ID
-    pub app_id: Option<String>,
-    /// 认证令牌
-    pub token: Option<String>,
-    /// 应用标识符
-    pub app_identifier: Option<String>,
-    /// 客户端信息
-    pub info: Option<String>,
-    /// 信息 QoS
-    pub info_qos: Option<QoS>,
-    /// 是否保留信息
-    pub retain_info: bool,
-    /// 是否不踢出其他客户端
-    pub is_not_kick_other: bool,
-    /// 客户端 IP
-    pub client_ip: Option<String>,
-    /// 验证信息
-    pub validation_info: Option<String>,
-    /// 是否支持重连
-    pub has_reconnect: bool,
-    /// 回调扩展
-    pub callback_ext: Option<String>,
-    /// 签名
-    pub signature: Option<Vec<u8>>,
-    /// 验证签名
-    pub verify_sign: Option<Vec<u8>>,
-}
-
-impl Default for MqttConfig {
-    fn default() -> Self {
-        Self {
-            client_id: String::new(),
-            host: "localhost".to_string(),
-            port: 1883,
-            keep_alive: 60,
-            app_id: None,
-            token: None,
-            app_identifier: None,
-            info: None,
-            info_qos: None,
-            retain_info: false,
-            is_not_kick_other: false,
-            client_ip: None,
-            validation_info: None,
-            has_reconnect: false,
-            callback_ext: None,
-            signature: None,
-            verify_sign: None,
-        }
-    }
-}
-
-/// MQTT 客户端
 pub struct MqttClient {
-    /// 客户端配置
-    config: MqttConfig,
-    /// 当前连接
+    client_id: String,
+    host: String,
+    port: u16,
+    keep_alive: u16,
+    username: Option<String>,
+    password: Option<String>,
+    clean_session: bool,
     connection: Option<Connection>,
-    /// 消息 ID 计数器
     packet_id: Arc<Mutex<u16>>,
-    /// 订阅主题列表
-    subscriptions: Arc<Mutex<HashMap<String, Vec<QoS>>>>,
-    /// 会话 ID
-    session_id: Option<String>,
-    /// 消息处理任务控制器
-    message_handler_tx: Option<oneshot::Sender<()>>,
+    outgoing_messages: Arc<Mutex<HashMap<u16, OutgoingMessage>>>,
+    message_timeout: Duration,
+    max_retries: u8,
 }
 
-/// 连接状态
 struct Connection {
-    /// 帧处理器
-    framed: Framed<TcpStream, MqttCodec>,
-    /// 消息发送通道
-    tx: mpsc::Sender<Message>,
+    tx_to_broker: mpsc::Sender<Message>,
+    rx_from_broker: Option<mpsc::Receiver<Result<Message>>>,
+    codec: Arc<MqttCodec>,
 }
 
 impl MqttClient {
-    /// 创建新的 MQTT 客户端
-    pub fn new(config: MqttConfig) -> Self {
+    pub fn new(client_id: String, host: String, port: u16) -> Self {
         Self {
-            config,
+            client_id,
+            host,
+            port,
+            keep_alive: 60,
+            username: None,
+            password: None,
+            clean_session: true,
             connection: None,
             packet_id: Arc::new(Mutex::new(0)),
-            subscriptions: Arc::new(Mutex::new(HashMap::new())),
-            session_id: None,
-            message_handler_tx: None,
+            outgoing_messages: Arc::new(Mutex::new(HashMap::new())),
+            message_timeout: Duration::from_secs(30),
+            max_retries: 3,
         }
     }
 
-    /// 连接到 MQTT 服务器
+    pub fn set_credentials(&mut self, username: String, password: String) {
+        self.username = Some(username);
+        self.password = Some(password);
+    }
+
+    pub fn set_keep_alive(&mut self, keep_alive: u16) {
+        self.keep_alive = keep_alive;
+    }
+
+    pub fn set_clean_session(&mut self, clean_session: bool) {
+        self.clean_session = clean_session;
+    }
+
+    pub fn set_message_timeout(&mut self, timeout: Duration) {
+        self.message_timeout = timeout;
+    }
+
+    pub fn set_max_retries(&mut self, max_retries: u8) {
+        self.max_retries = max_retries;
+    }
+
     pub async fn connect(&mut self) -> Result<()> {
-        let addr = format!("{}:{}", self.config.host, self.config.port);
-        let stream = TcpStream::connect(&addr).await?;
+        let socket = TcpStream::connect(format!("{}:{}", self.host, self.port)).await?;
         
-        let (tx, mut _rx) = mpsc::channel(100);
-        let framed = Framed::new(stream, MqttCodec::new());
-        
-        // 创建连接消息
+        // Create a new connect message
         let mut connect = ConnectMessage::new();
-        connect.client_id = self.config.client_id.clone();
-        connect.keep_alive = self.config.keep_alive;
-        connect.app_id = self.config.app_id.clone();
-        connect.token = self.config.token.clone();
-        connect.app_identifier = self.config.app_identifier.clone();
-        connect.info = self.config.info.clone();
-        connect.info_qos = self.config.info_qos;
-        connect.retain_info = self.config.retain_info;
-        connect.is_not_kick_other = self.config.is_not_kick_other;
-        connect.client_ip = self.config.client_ip.clone();
-        connect.validation_info = self.config.validation_info.clone();
-        connect.has_reconnect = self.config.has_reconnect;
-        connect.callback_ext = self.config.callback_ext.clone();
-        connect.signature = self.config.signature.clone();
-        connect.verify_sign = self.config.verify_sign.clone();
+        connect.client_id = self.client_id.clone();
+        connect.keep_alive = self.keep_alive;
         
-        let header = Header::new(MessageType::Connect);
-        let message = Message::new(header, connect.encode().freeze());
-        
-        let mut connection = Connection { framed, tx };
-        connection.framed.send(message).await?;
-        
-        // 等待 CONNACK
-        if let Some(connack) = connection.framed.next().await {
-            let connack = connack?;
-            if connack.header.message_type != MessageType::ConnAck {
-                return Err(anyhow!("Expected CONNACK, got {:?}", connack.header.message_type));
-            }
-            
-            let connack = ConnAckMessage::decode(&connack.payload)?;
-            if connack.status != 0 {
-                return Err(anyhow!("Connection refused: {}", connack.status));
-            }
-            
-            // 保存会话 ID
-            if let Some(session) = connack.session {
-                self.session_id = Some(session);
-            }
-            
-            info!("Connected to MQTT broker at {}", addr);
-            self.connection = Some(connection);
-            
-            // 启动保活任务
-            self.start_keep_alive_task();
-            
-            // 启动消息处理任务
-            self.start_message_processing_task();
-            
-            Ok(())
-        } else {
-            Err(anyhow!("Connection closed"))
+        if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            connect.app_id = Some(username.clone());
+            connect.token = Some(password.clone());
         }
-    }
-
-    /// 重连
-    pub async fn reconnect(&mut self) -> Result<()> {
-        if let Some(session_id) = &self.session_id {
-            let reconnect = ReconnectMessage::new(session_id.clone());
-            let header = Header::new(MessageType::Reconnect);
-            let message = Message::new(header, reconnect.encode().freeze());
-            
-            if let Some(connection) = &mut self.connection {
-                connection.framed.send(message).await?;
-                
-                // 等待重连确认
-                if let Some(reconnect_ack) = connection.framed.next().await {
-                    let reconnect_ack = reconnect_ack?;
-                    if reconnect_ack.header.message_type != MessageType::ReconnectAck {
-                        return Err(anyhow!("Expected RECONNECT_ACK, got {:?}", reconnect_ack.header.message_type));
-                    }
-                    
-                    let reconnect_ack = ReconnectAckMessage::decode(&reconnect_ack.payload)?;
-                    match reconnect_ack.status {
-                        ReconnectStatus::Accepted => {
-                            info!("Reconnected successfully");
-                            Ok(())
-                        }
-                        ReconnectStatus::Error => {
-                            Err(anyhow!("Reconnect failed"))
-                        }
-                        ReconnectStatus::NoMaster => {
-                            Err(anyhow!("No master available"))
-                        }
-                    }
-                } else {
-                    Err(anyhow!("Connection closed during reconnect"))
-                }
-            } else {
-                Err(anyhow!("Not connected"))
-            }
-        } else {
-            Err(anyhow!("No session ID available"))
-        }
-    }
-
-    /// 启动保活任务
-    fn start_keep_alive_task(&self) {
-        let keep_alive = self.config.keep_alive;
-        let _tx = self.connection.as_ref().unwrap().tx.clone();
         
+        // Create a new codec
+        let codec = MqttCodec::new();
+        
+        // Create framed connection
+        let mut framed = Framed::new(socket, codec);
+        
+        // Create channels
+        let (tx_to_broker, mut rx_to_broker) = mpsc::channel(100);
+        let (tx_from_broker, rx_from_broker) = mpsc::channel(100);
+        
+        // Create connection
+        let connection = Connection {
+            tx_to_broker: tx_to_broker.clone(),
+            rx_from_broker: Some(rx_from_broker),
+            codec: Arc::new(MqttCodec::new()),
+        };
+        
+        // Clone tx_to_broker before moving connection
+        let tx_to_broker = tx_to_broker.clone();
+        
+        // Store connection
+        self.connection = Some(connection);
+        
+        // Send connect message
+        let header = Header {
+            message_type: MessageType::Connect,
+            dup: false,
+            qos: QoS::AtMostOnce,
+            retain: false,
+        };
+        
+        let connect_message = Message::new(header, connect.encode().freeze());
+        
+        framed.send(connect_message).await?;
+        
+        // Spawn task to handle messages from/to broker
+        let client_id = self.client_id.clone();
+        let packet_id = self.packet_id.clone();
+        let outgoing_messages = self.outgoing_messages.clone();
+
         tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_secs(keep_alive as u64 / 2));
+            let mut ping_interval = time::interval(Duration::from_secs(30));
+            
             loop {
-                interval.tick().await;
-                let ping = Message::new(Header::new(MessageType::Ping), Bytes::new());
-                if _tx.send(ping).await.is_err() {
-                    break;
-                }
-            }
-        });
-    }
-
-    /// 启动消息处理任务
-    fn start_message_processing_task(&mut self) {
-        if let Some(connection) = &self.connection {
-            // 创建取消通道
-            let (tx, mut rx) = oneshot::channel();
-            self.message_handler_tx = Some(tx);
-            
-            // 获取需要的引用和复制
-            let _tx = connection.tx.clone();
-            let subscriptions = self.subscriptions.clone();
-            
-            // 使用同一个Socket地址创建新连接
-            let addr = format!("{}:{}", self.config.host, self.config.port);
-            
-            tokio::spawn(async move {
-                // 创建单独的连接用于消息处理
-                let stream = match TcpStream::connect(&addr).await {
-                    Ok(stream) => stream,
-                    Err(e) => {
-                        error!("Failed to create stream for message processing: {}", e);
-                        return;
-                    }
-                };
+                // Use futures::FutureExt::select to handle futures in sequence instead of tokio::select!
                 
-                let mut framed = Framed::new(stream, MqttCodec::new());
-                let mut done = false;
+                // 1. Check for ping timer
+                let ping_timer = ping_interval.tick().fuse();
+                let broker_message = rx_to_broker.recv().fuse();
                 
-                loop {
-                    // 检查是否收到取消信号
-                    if !done {
-                        if rx.try_recv().is_ok() {
-                            done = true;
+                futures::pin_mut!(ping_timer);
+                futures::pin_mut!(broker_message);
+                
+                match futures::future::select(ping_timer, broker_message).await {
+                    // Ping timer fired
+                    futures::future::Either::Left((_, _)) => {
+                        // Send ping
+                        let header = Header {
+                            message_type: MessageType::Ping,
+                            dup: false,
+                            qos: QoS::AtMostOnce,
+                            retain: false,
+                        };
+                        
+                        let ping = PingMessage;
+                        let message = Message::new(header, ping.encode().freeze());
+                        
+                        if let Err(err) = framed.send(message).await {
+                            error!("Failed to send ping: {}", err);
                             break;
                         }
-                    }
-                    
-                    // 处理消息
-                    if let Some(result) = framed.next().await {
-                        match result {
-                            Ok(message) => {
-                                match message.header.message_type {
-                                    MessageType::Publish => {
-                                        let topic_len = (message.payload[0] as usize) << 8 | message.payload[1] as usize;
-                                        let topic = String::from_utf8_lossy(&message.payload[2..2 + topic_len]).to_string();
-                                        let _payload = message.payload.slice(2 + topic_len..);
-                                        
-                                        if let Some(qos_levels) = subscriptions.lock().unwrap().get(&topic) {
-                                            for qos in qos_levels {
-                                                debug!("Received message on topic {} with QoS {:?}", topic, qos);
-                                            }
-                                        }
-                                    }
-                                    MessageType::Ping => {
-                                        let pong = Message::new(Header::new(MessageType::Pong), Bytes::new());
-                                        if let Err(e) = framed.send(pong).await {
-                                            error!("Failed to send PONG: {}", e);
-                                            break;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            Err(e) => {
-                                error!("Error processing message: {}", e);
-                                break;
-                            }
+                    },
+                    // Message from broker channel
+                    futures::future::Either::Right((Some(message), _)) => {
+                        if let Err(err) = framed.send(message).await {
+                            error!("Failed to send message: {}", err);
+                            break;
                         }
-                    } else {
+                    },
+                    // Channel closed
+                    futures::future::Either::Right((None, _)) => {
                         break;
                     }
                 }
-            });
-        }
+                
+                // Now check for incoming network messages
+                match framed.next().await {
+                    Some(Ok(message)) => {
+                        match message.header.message_type {
+                            MessageType::ConnAck => {
+                                // Handle connection acknowledgment
+                                if let Ok(connack) = ConnAckMessage::decode(&message.payload) {
+                                    if connack.status == 0 {
+                                        debug!("Connected to broker");
+                                    } else {
+                                        error!("Connection refused: status={}", connack.status);
+                                        break;
+                                    }
+                                }
+                            }
+                            MessageType::Publish => {
+                                // Handle incoming publish
+                                if let Ok(publish) = ServerPublishMessage::decode(&message.payload) {
+                                    // FIX ME 对 QoS 1 和 QoS 2 都回复 PubAckMessage
+                                    if message.header.qos == QoS::AtLeastOnce || message.header.qos == QoS::ExactlyOnce {
+                                        if let Some(packet_id) = publish.packet_id {
+                                            let puback: PubAckMessage = PubAckMessage::new(packet_id, 0);
+                                            
+                                            let ack_header = Header {
+                                                message_type: MessageType::PubAck,
+                                                dup: false,
+                                                qos: QoS::AtMostOnce,
+                                                retain: false,
+                                            };
+                                            
+                                            let ack_message = Message::new(ack_header, puback.encode().freeze());
+                                            
+                                            if let Err(err) = framed.send(ack_message).await {
+                                                error!("Failed to send PUBACK: {}", err);
+                                            }
+                                        }
+                                    }
+                                    
+                                    // 将 ServerPublishMessage 转换为 TrafficRecord
+                                    let topic = publish.topic.clone();
+                                    
+                                    // 序列化完整的 publish 对象
+                                    let publish_bytes = publish.encode().freeze().to_vec();
+                                    
+                                    // 创建 TrafficRecord
+                                    // FIX ME 需要修改
+                                    let record = crate::model::TrafficRecord::new_tcp(
+                                        &topic, // service_name 使用 topic
+                                        publish_bytes, // request_data 使用完整的 publish 对象
+                                        vec![] // response_data 为空
+                                    );
+                                    
+                                    // 尝试获取回放服务
+                                    if let Ok(playback_service) = crate::get_playback_service().await {
+                                        // 1. 先存储到 Redis
+                                        if let Err(err) = playback_service.add_record(record.clone()).await {
+                                            error!("Failed to store MQTT message to Redis: {}", err);
+                                        } else {
+                                            debug!("Stored MQTT message from topic '{}' to Redis", topic);
+                                        }
+                                        
+                                        // 2. 然后触发本地回放
+                                        playback_service.trigger_replay(&record).await;
+                                        debug!("Triggered local replay for MQTT message from topic '{}'", topic);
+                                    }
+                                    
+                                    // Forward to user
+                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
+                                        error!("Failed to forward message: {}", err);
+                                    }
+                                }
+                            }
+                            MessageType::PubAck => {
+                                // Handle publish acknowledgment
+                                if let Ok(ack) = PubAckMessage::decode(&message.payload) {
+                                    debug!("Received PUBACK for message ID: {}", ack.message_id);
+                                    
+                                    // Remove the acknowledged message from the outgoing messages
+                                    outgoing_messages.lock().unwrap().remove(&ack.message_id);
+                                }
+                            }
+                            MessageType::Pong => {
+                                // Pong received, do nothing
+                                debug!("Received pong from broker");
+                            }
+                            _ => {
+                                // Forward to user
+                                if let Err(err) = tx_from_broker.send(Ok(message)).await {
+                                    error!("Failed to forward message: {}", err);
+                                }
+                            }
+                        }
+                    }
+                    Some(Err(err)) => {
+                        error!("Error receiving message: {}", err);
+                        break;
+                    }
+                    None => {
+                        // Connection closed
+                        debug!("Connection closed by broker");
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Start the message resend task
+        let outgoing_messages = self.outgoing_messages.clone();
+        let message_timeout = self.message_timeout;
+        let max_retries = self.max_retries;
+        
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(1));
+            
+            loop {
+                interval.tick().await;
+                
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                
+                let mut to_resend = Vec::new();
+                let mut to_remove = Vec::new();
+                
+                // Check for messages that need to be resent
+                {
+                    let mut outgoing = outgoing_messages.lock().unwrap();
+                    
+                    for (id, msg) in outgoing.iter_mut() {
+                        if now - msg.timestamp > message_timeout.as_secs() {
+                            if msg.retries < max_retries {
+                                // Increase retry count and prepare to resend
+                                msg.retries += 1;
+                                msg.timestamp = now;
+                                
+                                to_resend.push((
+                                    *id,
+                                    msg.topic.clone(),
+                                    msg.payload.clone(),
+                                    msg.qos,
+                                ));
+                            } else {
+                                // Maximum retries reached, remove the message
+                                to_remove.push(*id);
+                                warn!("Message to topic {} with id {} timed out after {} retries", 
+                                     msg.topic, id, max_retries);
+                            }
+                        }
+                    }
+                    
+                    // Remove timed out messages
+                    for id in to_remove {
+                        outgoing.remove(&id);
+                    }
+                }
+                
+                // Resend messages
+                for (id, topic, payload, qos) in to_resend {
+                    let mut publish = PublishMessage::new(topic, payload);
+                    publish.packet_id = Some(id);
+                    
+                    let header = Header {
+                        message_type: MessageType::Publish,
+                        dup: true, // Set DUP flag for retransmission
+                        qos,
+                        retain: false,
+                    };
+                    
+                    let message = Message::new(header, publish.encode().freeze());
+                    
+                    if let Err(err) = tx_to_broker.send(message).await {
+                        error!("Failed to resend message: {}", err);
+                    }
+                }
+            }
+        });
+
+        Ok(())
     }
 
-    /// 发布消息
     pub async fn publish(&mut self, topic: String, payload: Bytes, qos: QoS) -> Result<()> {
-        let mut publish = PublishMessage::new(topic, payload);
+        let mut publish = PublishMessage::new(topic.clone(), payload.clone());
+        let mut packet_id = 0;
         
         if qos != QoS::AtMostOnce {
-            let mut packet_id = self.packet_id.lock().unwrap();
-            *packet_id = packet_id.wrapping_add(1);
-            publish.packet_id = Some(*packet_id);
+            let mut packet_id_guard = self.packet_id.lock().unwrap();
+            *packet_id_guard = packet_id_guard.wrapping_add(1);
+            packet_id = *packet_id_guard;
+            publish.packet_id = Some(packet_id);
         }
         
         let header = Header {
@@ -374,144 +391,52 @@ impl MqttClient {
         
         let message = Message::new(header, publish.encode().freeze());
         
-        if let Some(connection) = &mut self.connection {
-            connection.framed.send(message).await?;
-            Ok(())
-        } else {
-            Err(anyhow!("Not connected"))
-        }
-    }
-
-    /// 查询消息
-    pub async fn query(&mut self, topic: String, payload: Bytes) -> Result<QueryAckMessage> {
-        let mut query = QueryMessage::new(topic, payload);
-        
-        let mut packet_id = self.packet_id.lock().unwrap();
-        *packet_id = packet_id.wrapping_add(1);
-        query.target_id = Some(packet_id.to_string());
-        
-        let header = Header::new(MessageType::Query);
-        let message = Message::new(header, query.encode().freeze());
-        
-        if let Some(connection) = &mut self.connection {
-            connection.framed.send(message).await?;
-            
-            // 等待查询确认
-            if let Some(query_ack) = connection.framed.next().await {
-                let query_ack = query_ack?;
-                if query_ack.header.message_type != MessageType::QueryAck {
-                    return Err(anyhow!("Expected QUERY_ACK, got {:?}", query_ack.header.message_type));
-                }
+        if let Some(connection) = &self.connection {
+            // If QoS is 1 or 2, store the message for potential retransmission
+            if qos != QoS::AtMostOnce {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
                 
-                Ok(QueryAckMessage::decode(&query_ack.payload)?)
-            } else {
-                Err(anyhow!("Connection closed during query"))
+                let outgoing_msg = OutgoingMessage {
+                    message_id: packet_id,
+                    topic,
+                    qos,
+                    timestamp: now,
+                    retries: 0,
+                    payload,
+                };
+                
+                self.outgoing_messages.lock().unwrap().insert(packet_id, outgoing_msg);
             }
-        } else {
-            Err(anyhow!("Not connected"))
-        }
-    }
-
-    /// 订阅主题
-    pub async fn subscribe(&mut self, topic: String, qos: QoS) -> Result<()> {
-        let mut packet_id = self.packet_id.lock().unwrap();
-        *packet_id = packet_id.wrapping_add(1);
-        
-        let subscribe = SubscribeMessage::new(*packet_id, vec![(topic.clone(), qos)]);
-        // 使用Unsubscribe消息类型，因为message.rs中没有Subscribe类型
-        let header = Header::new(MessageType::Unsubscribe);
-        let message = Message::new(header, subscribe.encode().freeze());
-        
-        if let Some(connection) = &mut self.connection {
-            connection.framed.send(message).await?;
             
-            // 添加到本地订阅列表
-            self.subscriptions
-                .lock()
-                .unwrap()
-                .entry(topic)
-                .or_insert_with(Vec::new)
-                .push(qos);
-            
+            connection.tx_to_broker.send(message).await?;
             Ok(())
         } else {
             Err(anyhow!("Not connected"))
         }
     }
 
-    /// 取消订阅
-    pub async fn unsubscribe(&mut self, topic: String) -> Result<()> {
-        let mut packet_id = self.packet_id.lock().unwrap();
-        *packet_id = packet_id.wrapping_add(1);
-        
-        let unsubscribe = UnsubscribeMessage::new(*packet_id, vec![topic.clone()]);
-        let header = Header::new(MessageType::Unsubscribe);
-        let message = Message::new(header, unsubscribe.encode().freeze());
-        
-        if let Some(connection) = &mut self.connection {
-            connection.framed.send(message).await?;
-            
-            // 从本地订阅列表中移除
-            self.subscriptions.lock().unwrap().remove(&topic);
-            
-            Ok(())
-        } else {
-            Err(anyhow!("Not connected"))
-        }
-    }
-
-    /// 断开连接
     pub async fn disconnect(&mut self) -> Result<()> {
-        // 取消消息处理任务
-        if let Some(tx) = self.message_handler_tx.take() {
-            let _ = tx.send(());
-        }
-        
-        if let Some(connection) = &mut self.connection {
-            let disconnect = DisconnectMessage::new(0, None);
-            let header = Header::new(MessageType::Disconnect);
-            let message = Message::new(header, disconnect.encode().freeze());
-            
-            connection.framed.send(message).await?;
+        if let Some(connection) = &self.connection {
+            let disconnect = Message::new(Header::new(MessageType::Disconnect), Bytes::new());
+            connection.tx_to_broker.send(disconnect).await?;
             self.connection = None;
             Ok(())
         } else {
             Err(anyhow!("Not connected"))
         }
     }
-}
-
-/// MQTT 编解码器
-struct MqttCodec;
-
-impl MqttCodec {
-    fn new() -> Self {
-        Self
-    }
-}
-
-impl Decoder for MqttCodec {
-    type Item = Message;
-    type Error = anyhow::Error;
-
-    fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.is_empty() {
-            return Ok(None);
+    
+    // 设置AES加密，需要在connect后调用
+    pub async fn set_encryption(&self, key: Vec<u8>) -> Result<()> {
+        if let Some(connection) = &self.connection {
+            let crypto_info = CryptoInfo::new(key);
+            connection.codec.set_crypto_info(crypto_info).await;
+            Ok(())
+        } else {
+            Err(anyhow!("Not connected"))
         }
-
-        match Message::decode(src) {
-            Ok(message) => Ok(Some(message)),
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
-            Err(e) => Err(anyhow!("Failed to decode message: {}", e)),
-        }
-    }
-}
-
-impl Encoder<Message> for MqttCodec {
-    type Error = anyhow::Error;
-
-    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        dst.extend_from_slice(&item.encode());
-        Ok(())
     }
 } 
