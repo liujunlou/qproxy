@@ -751,21 +751,40 @@ impl PublishMessage {
 #[derive(Debug, Clone)]
 pub struct QueryMessage {
     pub topic: String,
-    pub payload: Bytes,
-    pub target_id: Option<String>,
+    pub payload: Bytes,  // 对应Java中的data
+    pub target_id: Option<String>,  // 对应Java中的targetId
+    pub packet_id: Option<u16>,
+    pub mqtt_version: u8,  // 对应Java中的mqttVersion
+    pub timestamp: u64,
     pub signature: Option<Vec<u8>>,
     pub verify_sign: Option<Vec<u8>>,
 }
 
 impl QueryMessage {
-    pub fn new(topic: String, payload: Bytes) -> Self {
+    pub fn new(topic: String, payload: Bytes, target_id: Option<String>) -> Self {
         Self {
             topic,
             payload,
-            target_id: None,
+            target_id,
+            packet_id: None,
+            mqtt_version: 3,  // 默认使用MQTT版本3
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             signature: None,
             verify_sign: None,
         }
+    }
+
+    pub fn with_packet_id(mut self, packet_id: u16) -> Self {
+        self.packet_id = Some(packet_id);
+        self
+    }
+    
+    pub fn with_version(mut self, version: u8) -> Self {
+        self.mqtt_version = version;
+        self
     }
 
     pub fn encode(&self) -> BytesMut {
@@ -776,11 +795,26 @@ impl QueryMessage {
         buf.put_u16(topic_bytes.len() as u16);
         buf.extend_from_slice(topic_bytes);
         
+        // MQTT Version
+        buf.put_u8(self.mqtt_version);
+        
+        // Packet ID if present
+        if let Some(packet_id) = self.packet_id {
+            buf.put_u16(packet_id);
+        } else {
+            buf.put_u16(0); // 0 表示没有 packet_id
+        }
+        
+        // Timestamp
+        buf.put_u64(self.timestamp);
+        
         // Target ID if present
         if let Some(ref target_id) = self.target_id {
             let target_id_bytes = target_id.as_bytes();
             buf.put_u16(target_id_bytes.len() as u16);
             buf.extend_from_slice(target_id_bytes);
+        } else {
+            buf.put_u16(0); // 0 表示没有 target_id
         }
         
         // Payload
@@ -804,16 +838,34 @@ impl QueryMessage {
         let topic = String::from_utf8(topic_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         
+        // MQTT Version
+        let mqtt_version = cursor.get_u8();
+        
+        // Packet ID
+        let packet_id_value = cursor.get_u16();
+        let packet_id = if packet_id_value > 0 { Some(packet_id_value) } else { None };
+        
+        // Timestamp
+        let timestamp = cursor.get_u64();
+        
         // Target ID
         let target_id_len = cursor.get_u16() as usize;
-        let mut target_id_bytes = vec![0u8; target_id_len];
-        cursor.read_exact(&mut target_id_bytes)?;
-        let target_id = Some(String::from_utf8(target_id_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?);
+        let target_id = if target_id_len > 0 {
+            let mut target_id_bytes = vec![0u8; target_id_len];
+            cursor.read_exact(&mut target_id_bytes)?;
+            Some(String::from_utf8(target_id_bytes)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?)
+        } else {
+            None
+        };
         
         // Payload
-        let payload_len = buf.len() - cursor.position() as usize;
-        let mut payload_bytes = vec![0u8; payload_len];
+        let remaining = buf.len() - cursor.position() as usize;
+        if remaining == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty payload"));
+        }
+        
+        let mut payload_bytes = vec![0u8; remaining];
         cursor.read_exact(&mut payload_bytes)?;
         let payload = Bytes::from(payload_bytes);
         
@@ -824,6 +876,9 @@ impl QueryMessage {
             topic,
             payload,
             target_id,
+            packet_id,
+            mqtt_version,
+            timestamp,
             signature: None,
             verify_sign,
         })

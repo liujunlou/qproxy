@@ -1,6 +1,6 @@
 use super::message::{
     ConnectMessage, ConnAckMessage, DisconnectMessage, Header, Message, MessageType, PingMessage,
-    PublishMessage, QoS, ServerPublishMessage, PubAckMessage,
+    PublishMessage, QoS, ServerPublishMessage, PubAckMessage, QueryMessage, QueryAckMessage, QueryConMessage,
 };
 use super::crypto::{self, CryptoInfo};
 use super::codec::MqttCodec;
@@ -271,6 +271,98 @@ impl MqttClient {
                                     outgoing_messages.lock().unwrap().remove(&ack.message_id);
                                 }
                             }
+                            MessageType::Query => {
+                                // Handle incoming query
+                                if let Ok(query) = QueryMessage::decode(&message.payload) {
+                                    debug!("Received Query for topic: {} with target_id: {:?}", 
+                                           query.topic, query.target_id);
+                                    
+                                    // 将 QueryMessage 转换为 TrafficRecord
+                                    let topic = query.topic.clone();
+                                    
+                                    // 保存原始消息的 QoS 级别
+                                    let original_qos = message.header.qos;
+                                    
+                                    // 序列化完整的 query 对象
+                                    let query_bytes = query.encode().freeze().to_vec();
+                                    
+                                    // 创建 TrafficRecord
+                                    let record = crate::model::TrafficRecord::new_tcp(
+                                        &topic, // service_name 使用 topic
+                                        query_bytes, // request_data 使用完整的 query 对象
+                                        vec![] // response_data 为空
+                                    );
+                                    
+                                    // 尝试获取回放服务
+                                    if let Ok(playback_service) = crate::get_playback_service().await {
+                                        // 1. 先存储到 Redis
+                                        if let Err(err) = playback_service.add_record(record.clone()).await {
+                                            error!("Failed to store Query message to Redis: {}", err);
+                                        } else {
+                                            debug!("Stored Query message from topic '{}' to Redis", topic);
+                                        }
+                                        
+                                        // 2. 然后触发本地回放
+                                        playback_service.trigger_replay(&record).await;
+                                        debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                    }
+                                    
+                                    // 回复 QueryAck
+                                    if let Some(packet_id) = query.packet_id {
+                                        let query_ack = QueryAckMessage::new(packet_id, 0, Some(query.payload.clone()));
+                                        
+                                        let ack_header = Header {
+                                            message_type: MessageType::QueryAck,
+                                            dup: false,
+                                            qos: original_qos, // 使用原始消息的 QoS 级别
+                                            retain: false,
+                                        };
+                                        
+                                        let ack_message = Message::new(ack_header, query_ack.encode().freeze());
+                                        
+                                        if let Err(err) = framed.send(ack_message).await {
+                                            error!("Failed to send QueryAck: {}", err);
+                                        } else {
+                                            debug!("Sent QueryAck for message ID: {}", packet_id);
+                                        }
+                                    }
+                                    
+                                    // Forward to user
+                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
+                                        error!("Failed to forward Query message: {}", err);
+                                    }
+                                }
+                            }
+                            MessageType::QueryAck => {
+                                // Handle query acknowledgment
+                                if let Ok(ack) = QueryAckMessage::decode(&message.payload) {
+                                    debug!("Received QueryAck for message ID: {} with status: {}", 
+                                           ack.message_id, ack.status);
+                                    
+                                    // 在 QoS 2 (ExactlyOnce) 中，不在这里移除消息
+                                    // 而是等待 QueryCon 消息到达后才移除
+                                    
+                                    // 如果有响应数据，可以处理它
+                                    if let Some(data) = &ack.data {
+                                        debug!("QueryAck contains data of size: {} bytes", data.len());
+                                    }
+                                    
+                                    // Forward to user
+                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
+                                        error!("Failed to forward QueryAck message: {}", err);
+                                    }
+                                }
+                            }
+                            MessageType::QueryCon => {
+                                // Handle query confirmation
+                                if let Ok(con) = QueryConMessage::decode(&message.payload) {
+                                    debug!("Received QueryCon for message ID: {}", con.message_id);
+                                    
+                                    // 清理相关的 OutgoingMessage
+                                    outgoing_messages.lock().unwrap().remove(&con.message_id);
+                                    debug!("Removed outgoing message with ID: {} after receiving QueryCon", con.message_id);
+                                }
+                            }
                             MessageType::Pong => {
                                 // Pong received, do nothing
                                 debug!("Received pong from broker");
@@ -416,6 +508,73 @@ impl MqttClient {
         } else {
             Err(anyhow!("Not connected"))
         }
+    }
+
+    /// 发送 Query 消息
+    /// 
+    /// # 参数
+    ///
+    /// * `topic` - 查询的主题
+    /// * `payload` - 查询的数据内容
+    /// * `target_id` - 可选的目标ID，指定接收方
+    ///
+    /// # 返回值
+    ///
+    /// 操作的结果
+    pub async fn query(&mut self, topic: String, payload: Bytes, target_id: Option<String>) -> Result<u16> {
+        if self.connection.is_none() {
+            return Err(anyhow!("Not connected to broker"));
+        }
+
+        // 获取下一个 packet_id
+        let packet_id = {
+            let mut id = self.packet_id.lock().unwrap();
+            *id = if *id < u16::MAX { *id + 1 } else { 1 };
+            *id
+        };
+
+        // 创建 Query 消息
+        let query = QueryMessage::new(topic.clone(), payload.clone(), target_id)
+            .with_packet_id(packet_id);
+
+        let header = Header {
+            message_type: MessageType::Query,
+            dup: false,
+            qos: QoS::ExactlyOnce,  // Query 消息使用 QoS 1
+            retain: false,
+        };
+
+        let message = Message::new(header, query.encode().freeze());
+
+        // 保存发送的消息，以便需要时重发
+        {
+            let mut outgoing = self.outgoing_messages.lock().unwrap();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
+            outgoing.insert(
+                packet_id,
+                OutgoingMessage {
+                    message_id: packet_id,
+                    topic: topic.clone(),
+                    qos: QoS::ExactlyOnce,
+                    timestamp: now,
+                    retries: 0,
+                    payload: payload.clone(),
+                },
+            );
+        }
+
+        // 发送消息
+        let connection = self.connection.as_ref().unwrap();
+        if let Err(err) = connection.tx_to_broker.send(message).await {
+            return Err(anyhow!("Failed to send Query: {}", err));
+        }
+
+        debug!("Sent Query message to topic: {} with ID: {}", topic, packet_id);
+        Ok(packet_id)
     }
 
     pub async fn disconnect(&mut self) -> Result<()> {
