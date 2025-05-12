@@ -1,11 +1,11 @@
 use std::path::Path;
 use tracing::Level;
-use tracing_subscriber::{
-    fmt::{self, format::FmtSpan, time::SystemTime}, 
-    EnvFilter,
-    prelude::*,
-};
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::{
+    fmt::{self, format::FmtSpan, time::SystemTime},
+    prelude::*,
+    EnvFilter,
+};
 
 use crate::{errors::Error, options::LoggingOptions};
 

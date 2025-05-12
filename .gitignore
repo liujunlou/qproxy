@@ -1,6 +1,7 @@
-path=/
 /target
 .DS_Store
 Cargo.lock
 logs/
 .vscode/
+.idea/
+.env

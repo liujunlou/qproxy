@@ -1,8 +1,10 @@
 pub mod http;
 pub mod tcp;
+pub mod filter;
 
-use crate::options::Options;
 use crate::errors::Error;
+use crate::options::Options;
+use filter::ONCE_FILTER_CHAIN;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
 
@@ -22,8 +24,11 @@ impl ProxyServer {
         let tcp_server = self.options.clone();
 
         // 启动 HTTP 和 TCP 代理服务器
-        let http_handle = tokio::spawn(self::http::start_server(http_server));
-        let tcp_handle = tokio::spawn(self::tcp::start_server(tcp_server));
+        let http_handle = tokio::spawn(self::http::start_server(http_server.clone()));
+        let tcp_handle = tokio::spawn(self::tcp::start_server(tcp_server.clone()));
+
+        // 添加 HTTP 代理服务器的过滤器
+        ONCE_FILTER_CHAIN.blocking_lock().add_filter(Box::new(filter::response::ResponseFilter::new(http_server.clone().http.filter_fields.clone())));
 
         (http_handle, tcp_handle)
     }

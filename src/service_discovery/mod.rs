@@ -1,20 +1,20 @@
-use std::sync::Arc;
-use rand::seq::IndexedRandom;
-use tokio::sync::RwLock;
-use std::collections::HashMap;
-use url::Url;
 use crate::errors::Error;
-use tracing::{info, error, warn};
 use crate::options::{Options, ServiceConfig, ServiceDiscoveryProvider};
 use async_trait::async_trait;
+use rand::seq::IndexedRandom;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+use tracing::{error, info, warn};
+use url::Url;
 
 mod static_provider;
 mod zookeeper_provider;
 mod kubernetes_provider;
 
+use kubernetes_provider::KubernetesServiceDiscovery;
 use static_provider::StaticServiceDiscovery;
 use zookeeper_provider::ZookeeperServiceDiscovery;
-use kubernetes_provider::KubernetesServiceDiscovery;
 
 #[derive(Clone, Debug)]
 pub struct ServiceInstance {

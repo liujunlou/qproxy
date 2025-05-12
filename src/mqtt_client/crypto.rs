@@ -1,9 +1,7 @@
-use aes::Aes128;
 use aes_gcm::{
-    aead::{Aead, KeyInit, generic_array::GenericArray},
+    aead::{generic_array::GenericArray, Aead, KeyInit},
     Aes128Gcm, Nonce
 };
-use bytes::{Bytes, BytesMut};
 
 // 定义与Java相同的常量
 pub const RCLOUD_KEY: [u8; 8] = [0, 6, 82, 67, 108, 111, 117, 100]; // "RCloud"

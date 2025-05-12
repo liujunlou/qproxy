@@ -1,14 +1,14 @@
-use std::sync::Arc;
 use reqwest::{Client, ClientBuilder};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{error, info};
 
 use crate::errors::Error;
+use crate::get_playback_service;
 use crate::model::TrafficRecord;
 use crate::options::{Options, PeerOptions};
 use crate::playback::PlaybackService;
-use crate::get_playback_service;
 
 /// 同步服务，用于同步流量记录
 /// 定时从peer拉取流量记录，并回放

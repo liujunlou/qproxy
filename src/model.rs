@@ -1,11 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
+use crate::{errors::Error, mqtt_client::message::MessageType};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrafficRecord {
     pub id: String,
     pub peer_id: String,
     pub protocol: Protocol,
+    pub codec: Option<MessageType>,
     pub timestamp: SystemTime,
     pub request: RequestData,
     pub response: ResponseData,
@@ -49,6 +52,7 @@ impl TrafficRecord {
             id: uuid::Uuid::new_v4().to_string(),
             peer_id: service_name.clone(),
             protocol: Protocol::HTTP,
+            codec: None,
             timestamp: SystemTime::now(),
             request: RequestData {
                 method: Some(method),
@@ -70,6 +74,8 @@ impl TrafficRecord {
             id: uuid::Uuid::new_v4().to_string(),
             peer_id: service_name.to_string(),
             protocol: Protocol::TCP,
+            // TODO 需要根据具体的消息类型来确定
+            codec: Some(MessageType::Publish),
             timestamp: SystemTime::now(),
             request: RequestData {
                 method: None,
@@ -84,5 +90,25 @@ impl TrafficRecord {
                 body: response_data,
             },
         }
+    }
+
+    // 过滤字段
+    pub fn filter_fields(&self, fields: Vec<String>) -> Result<Self, Error> {
+        let mut filtered = self.clone();
+        // 在TCP的情况下，解析拉取的body为具体的消息对象，并过滤其中的字段
+        // if self.protocol == Protocol::TCP {
+        //     // 解析拉取的body为具体的消息对象
+        //     let request_body = MqttCodec::decode(&filtered.request.body)?;
+        //     // TODO 反序列化为具体的消息对象
+            
+        //     // 过滤其中的字段
+        //     filtered.request.body = fields.iter().map(|field| {
+        //         filtered.request.body.iter().filter(|item| {
+        //             item.contains(field)
+        //         }).collect()
+        //     }).collect();
+        // }
+        
+        Ok(filtered)
     }
 } 

@@ -1,5 +1,5 @@
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use std::collections::HashMap;
+use std::{net::SocketAddr, str::FromStr, sync::Arc};
 
 use bytes::Bytes;
 use http::{Request, Response};
@@ -12,6 +12,8 @@ use tracing::{error, info};
 use crate::{
     errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}
 };
+
+use super::filter::ONCE_FILTER_CHAIN;
 
 // 启动http服务端
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
@@ -72,8 +74,25 @@ async fn handle_request(
 
                 let peer_id = query_params.get("peer_id").unwrap_or(&"default");
                 let shard_id = query_params.get("shard_id").unwrap_or(&"default");
+                let from = query_params.get("from").unwrap_or(&"default");
                 
                 let records = playback_service.get_records_for_sync(peer_id, shard_id).await?;
+                // 判断拉取端，如果是互联网端，则需要做数据过滤
+                let records = if from.eq_ignore_ascii_case("internet") {
+                    let mut filtered_records = Vec::new();
+                    for record in records {
+                        let filtered = if options.http.filter_fields.is_some() {
+                            ONCE_FILTER_CHAIN.lock().await.filter(&record)
+                        } else {
+                            Ok(record)
+                        }?;
+                        filtered_records.push(filtered);
+                    }
+                    filtered_records
+                } else {
+                    records
+                };
+
                 let json = serde_json::to_string(&records)
                     .map_err(|e| Error::Proxy(format!("Failed to serialize records: {}", e)))?;
                 
@@ -104,103 +123,9 @@ async fn handle_request(
             }
         }
     }
-
-    match options.mode {
-        ProxyMode::Record => {
-            // Save request info before consuming
-            let method = req.method().clone();
-            let uri = req.uri().clone();
-            let headers = req.headers().clone();
-            let params = uri.query()
-                .map(|s| s.split('&')
-                    .filter_map(|param| {
-                        let parts: Vec<&str> = param.split('=').collect();
-                        if parts.len() == 2 {
-                            Some((parts[0].to_string(), parts[1].to_string()))
-                        } else {
-                            None
-                        }
-                    })
-                    .collect());
-            
-            // 获取请求体
-            let body_bytes = req.collect().await?.to_bytes();
-            
-            // 构建转发请求
-            let forwarded_req = Request::builder()
-                .method(method.clone())
-                .uri(format!("{}{}", options.http.downstream, uri.path_and_query().map(|x| x.as_str()).unwrap_or("")))
-                .body(Full::new(body_bytes.clone()))
-                .unwrap();
-
-            // 发送请求到下游服务器并获取响应
-            let client = Builder::new((*executor).clone())
-                .pool_idle_timeout(std::time::Duration::from_secs(30))
-                .build_http();
-            let resp = client.request(forwarded_req).await?;
-            
-            // 获取响应体
-            let (parts, body) = resp.into_parts();
-            let body_bytes = body.collect().await?.to_bytes();
-            
-            // 创建流量记录
-            let record = TrafficRecord::new_http(
-                method.to_string(),
-                uri.to_string(),
-                params,
-                headers
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect(),
-                body_bytes.to_vec(),
-                parts.status.as_u16(),
-                parts.headers
-                    .iter()
-                    .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                    .collect(),
-                body_bytes.to_vec(),
-            );
-
-            // 保存记录
-            get_playback_service().await?.add_record(record).await?;
-            
-            // 构建响应
-            let response = Response::from_parts(parts, Full::new(body_bytes));
-            
-            Ok(response)
-        }
-        ProxyMode::Playback => {
-            Ok(get_playback_service().await?.playback(req).await)
-        }
-        ProxyMode::Forward => {
-            // Save request info before consuming
-            let method = req.method().clone();
-            let uri = req.uri().clone();
-            
-            // 获取请求体
-            let body_bytes = req.collect().await?.to_bytes();
-            
-            // 构建转发请求
-            let forwarded_req = Request::builder()
-                .method(method)
-                .uri(format!("{}{}", options.http.downstream, uri.path_and_query().map(|x| x.as_str()).unwrap_or("")))
-                .body(Full::new(body_bytes.clone()))
-                .unwrap();
-
-            // 发送请求到下游服务器并获取响应
-            let client = Builder::new((*executor).clone())
-                .pool_idle_timeout(std::time::Duration::from_secs(30))
-                .build_http();
-            let resp = client.request(forwarded_req).await?;
-            
-            // 获取响应体
-            let (parts, body) = resp.into_parts();
-            let body_bytes = body.collect().await?.to_bytes();
-            
-            // 构建响应
-            let response = Response::from_parts(parts, Full::new(body_bytes));
-            
-            Ok(response)
-        }
-    }
+    // 处理其他请求
+    return Ok(Response::builder()
+        .status(http::StatusCode::NOT_FOUND)
+        .body(Full::new(Bytes::from("Not found")))
+        .unwrap());
 }

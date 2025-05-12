@@ -16,12 +16,12 @@
 
 use std::sync::Arc;
 
+use crate::options::Options;
+use crate::playback::PlaybackService;
 use errors::Error;
 use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, ServerConfig};
 use tokio::signal;
 use tracing::{error, info};
-use crate::playback::PlaybackService;
-use crate::options::Options;
 
 mod options;
 mod logger;
@@ -32,6 +32,7 @@ mod proxy;
 mod api;
 mod sync;
 mod service_discovery;
+mod mqtt_client;
 
 /// 全局共享的回放服务实例
 /// 使用 once_cell 确保单例模式和线程安全

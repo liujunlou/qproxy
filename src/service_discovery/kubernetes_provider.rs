@@ -1,16 +1,16 @@
+use super::{ServiceDiscoveryBackend, ServiceInstance};
+use crate::errors::Error;
+use async_trait::async_trait;
+use http::Uri;
+use k8s_openapi::api::core::v1::Service;
+use kube::config::Kubeconfig;
 use kube::{
     api::{Api, ListParams}, config::{self, AuthInfo, KubeConfigOptions}, Client, Config
 };
-use k8s_openapi::api::core::v1::Service;
 use secrecy::SecretString;
-use tracing::{info, error};
-use http::Uri;
 use std::{collections::HashMap, str::FromStr};
-use crate::errors::Error;
-use super::{ServiceInstance, ServiceDiscoveryBackend};
-use async_trait::async_trait;
-use kube::config::Kubeconfig;
 use tokio::fs;
+use tracing::{error, info};
 
 pub struct KubernetesServiceDiscovery {
     client: Client,
@@ -136,9 +136,9 @@ impl ServiceDiscoveryBackend for KubernetesServiceDiscovery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
-    use k8s_openapi::api::core::v1::{ServiceSpec, ServicePort, ServiceStatus};
+    use k8s_openapi::api::core::v1::{ServicePort, ServiceSpec, ServiceStatus};
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use std::collections::BTreeMap;
 
     fn create_test_k8s_service(name: &str, cluster_ip: &str, port: i32) -> Service {
         Service {

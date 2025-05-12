@@ -38,6 +38,12 @@ pub enum Error {
 
     #[error("SystemTime error: {0}")]
     SystemTime(#[from] std::time::SystemTimeError),
+
+    /// MQTT 错误
+    #[error("MQTT error: {0}")]
+    Mqtt(String),
+    #[error("Decode error: {0}")]
+    MqttDecodeError(String),
 }
 
 impl From<String> for Error {
@@ -55,8 +61,8 @@ impl From<&str> for Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io;
     use std::error::Error as StdError;
+    use std::io;
 
     #[test]
     fn test_error_display() {

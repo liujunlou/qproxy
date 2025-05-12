@@ -1,9 +1,9 @@
+use super::{ServiceDiscoveryBackend, ServiceInstance};
+use crate::errors::Error;
+use async_trait::async_trait;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
-use async_trait::async_trait;
-use crate::errors::Error;
-use super::{ServiceInstance, ServiceDiscoveryBackend};
 
 pub struct StaticServiceDiscovery {
     services: Arc<RwLock<HashMap<String, ServiceInstance>>>,

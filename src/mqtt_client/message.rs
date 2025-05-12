@@ -1,7 +1,9 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::io::{self, Read, Write};
+use qproxy_macros::FieldNames;
+use serde::{Deserialize, Serialize};
+use std::io::{self, Read};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub enum MessageType {
     NotSupport = -1,
     Reserve1 = 0,
@@ -192,7 +194,7 @@ impl RetryableMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct ConnectMessage {
     pub protocol_id: String,
     pub protocol_version: u8,
@@ -505,9 +507,29 @@ impl ConnectMessage {
             verify_sign,
         })
     }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "protocol_id" => self.protocol_id = "".to_string(),
+            "protocol_version" => self.protocol_version = 0,
+            "client_id" => self.client_id = "".to_string(),
+            "keep_alive" => self.keep_alive = 0,
+            "app_id" => self.app_id = None,
+            "token" => self.token = None,
+            "app_identifier" => self.app_identifier = None,
+            "info" => self.info = None,
+            "info_qos" => self.info_qos = None,
+            "client_ip" => self.client_ip = None,
+            "validation_info" => self.validation_info = None,
+            "callback_ext" => self.callback_ext = None,
+            "signature" => self.signature = None,
+            "verify_sign" => self.verify_sign = None,
+            _ => {} // 忽略其他字段
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct ConnAckMessage {
     pub status: u8,
     pub user_id: Option<String>,
@@ -653,9 +675,22 @@ impl ConnAckMessage {
             secret_key,
         })
     }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "user_id" => self.user_id = None,
+            "session" => self.session = None,
+            "timestamp" => self.timestamp = None,
+            "message_id" => self.message_id = None,
+            "online_client_info" => self.online_client_info = None,
+            "decryption_type" => self.decryption_type = 0,
+            "secret_key" => self.secret_key = None,
+            _ => {}
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct PublishMessage {
     pub topic: String,
     pub payload: Bytes,
@@ -746,9 +781,21 @@ impl PublishMessage {
             verify_sign,
         })
     }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "topic" => self.topic = "".to_string(),
+            "payload" => self.payload = Bytes::new(),
+            "packet_id" => self.packet_id = None,
+            "target_id" => self.target_id = None,
+            "signature" => self.signature = None,
+            "verify_sign" => self.verify_sign = None,
+            _ => {} // 忽略其他字段
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct QueryMessage {
     pub topic: String,
     pub payload: Bytes,  // 对应Java中的data
@@ -781,7 +828,7 @@ impl QueryMessage {
         self.packet_id = Some(packet_id);
         self
     }
-    
+
     pub fn with_version(mut self, version: u8) -> Self {
         self.mqtt_version = version;
         self
@@ -797,17 +844,17 @@ impl QueryMessage {
         
         // MQTT Version
         buf.put_u8(self.mqtt_version);
-        
+
         // Packet ID if present
         if let Some(packet_id) = self.packet_id {
             buf.put_u16(packet_id);
         } else {
             buf.put_u16(0); // 0 表示没有 packet_id
         }
-        
+
         // Timestamp
         buf.put_u64(self.timestamp);
-        
+
         // Target ID if present
         if let Some(ref target_id) = self.target_id {
             let target_id_bytes = target_id.as_bytes();
@@ -840,14 +887,14 @@ impl QueryMessage {
         
         // MQTT Version
         let mqtt_version = cursor.get_u8();
-        
+
         // Packet ID
         let packet_id_value = cursor.get_u16();
         let packet_id = if packet_id_value > 0 { Some(packet_id_value) } else { None };
-        
+
         // Timestamp
         let timestamp = cursor.get_u64();
-        
+
         // Target ID
         let target_id_len = cursor.get_u16() as usize;
         let target_id = if target_id_len > 0 {
@@ -864,7 +911,7 @@ impl QueryMessage {
         if remaining == 0 {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "Empty payload"));
         }
-        
+
         let mut payload_bytes = vec![0u8; remaining];
         cursor.read_exact(&mut payload_bytes)?;
         let payload = Bytes::from(payload_bytes);
@@ -883,9 +930,23 @@ impl QueryMessage {
             verify_sign,
         })
     }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "topic" => self.topic = "".to_string(),
+            "payload" => self.payload = Bytes::new(),
+            "target_id" => self.target_id = None,
+            "packet_id" => self.packet_id = None,
+            "mqtt_version" => self.mqtt_version = 0,
+            "timestamp" => self.timestamp = 0,
+            "signature" => self.signature = None,
+            "verify_sign" => self.verify_sign = None,
+            _ => {}
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct QueryAckMessage {
     pub message_id: u16,
     pub status: u16,
@@ -956,7 +1017,7 @@ impl QueryAckMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct QueryConMessage {
     pub message_id: u16,
 }
@@ -979,9 +1040,16 @@ impl QueryConMessage {
         let message_id = ((buf[0] as u16) << 8) | (buf[1] as u16);
         Ok(Self { message_id })
     }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "message_id" => self.message_id = 0,
+            _ => {}
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct ReconnectMessage {
     pub session: String,
 }
@@ -1010,7 +1078,7 @@ impl ReconnectMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct ReconnectAckMessage {
     pub status: ReconnectStatus,
 }
@@ -1048,7 +1116,7 @@ impl ReconnectAckMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct UnsubscribeMessage {
     pub message_id: u16,
     pub topics: Vec<String>,
@@ -1096,7 +1164,7 @@ impl UnsubscribeMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct UnsubAckMessage {
     pub message_id: u16,
 }
@@ -1139,7 +1207,7 @@ impl PongMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct DisconnectMessage {
     pub status: u8,
     pub kicked_client_info: Option<String>,
@@ -1196,7 +1264,7 @@ impl DisconnectMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct ServerPublishMessage {
     pub topic: String,
     pub payload: Bytes,
@@ -1227,12 +1295,12 @@ impl ServerPublishMessage {
 
     pub fn encode(&self) -> BytesMut {
         let mut buf = BytesMut::new();
-        
+
         // Topic
         let topic_bytes = self.topic.as_bytes();
         buf.put_u16(topic_bytes.len() as u16);
         buf.extend_from_slice(topic_bytes);
-        
+
         // User ID if present
         if let Some(ref user_id) = self.user_id {
             let user_id_bytes = user_id.as_bytes();
@@ -1241,7 +1309,7 @@ impl ServerPublishMessage {
         } else {
             buf.put_u16(0); // Empty user ID
         }
-        
+
         // Target ID if present
         if let Some(ref target_id) = self.target_id {
             let target_id_bytes = target_id.as_bytes();
@@ -1250,38 +1318,38 @@ impl ServerPublishMessage {
         } else {
             buf.put_u16(0); // Empty target ID
         }
-        
+
         // Timestamp
         buf.put_u64(self.timestamp);
-        
+
         // Packet ID if present
         if let Some(packet_id) = self.packet_id {
             buf.put_u16(packet_id);
         } else {
             buf.put_u16(0); // Default packet ID
         }
-        
+
         // Payload
         buf.extend_from_slice(&self.payload);
-        
+
         // Signature if present
         if let Some(ref signature) = self.signature {
             buf.extend_from_slice(signature);
         }
-        
+
         buf
     }
 
     pub fn decode(buf: &[u8]) -> io::Result<Self> {
         let mut cursor = std::io::Cursor::new(buf);
-        
+
         // Topic
         let topic_len = cursor.get_u16() as usize;
         let mut topic_bytes = vec![0u8; topic_len];
         cursor.read_exact(&mut topic_bytes)?;
         let topic = String::from_utf8(topic_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        
+
         // User ID
         let user_id_len = cursor.get_u16() as usize;
         let user_id = if user_id_len > 0 {
@@ -1292,7 +1360,7 @@ impl ServerPublishMessage {
         } else {
             None
         };
-        
+
         // Target ID
         let target_id_len = cursor.get_u16() as usize;
         let target_id = if target_id_len > 0 {
@@ -1303,23 +1371,23 @@ impl ServerPublishMessage {
         } else {
             None
         };
-        
+
         // Timestamp
         let timestamp = cursor.get_u64();
-        
+
         // Packet ID
         let packet_id = {
             let id = cursor.get_u16();
             if id > 0 { Some(id) } else { None }
         };
-        
+
         // Payload (rest of the buffer)
         let remaining = buf.len() - cursor.position() as usize;
         let payload_len = if remaining >= 8 { remaining - 8 } else { remaining };
         let mut payload_bytes = vec![0u8; payload_len];
         cursor.read_exact(&mut payload_bytes)?;
         let payload = Bytes::from(payload_bytes);
-        
+
         // Signature if present
         let mut signature = None;
         if remaining >= 8 {
@@ -1327,10 +1395,10 @@ impl ServerPublishMessage {
             cursor.read_exact(&mut sig_bytes)?;
             signature = Some(sig_bytes);
         }
-        
+
         // Calculate verify sign from payload
         let verify_sign = Some(digest_util::init_signature(&payload));
-        
+
         Ok(Self {
             topic,
             payload,
@@ -1344,7 +1412,7 @@ impl ServerPublishMessage {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, FieldNames)]
 pub struct PubAckMessage {
     pub message_id: u16,
     pub status: u16,
@@ -1358,7 +1426,7 @@ impl PubAckMessage {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default();
-        
+
         Self {
             message_id,
             status,
@@ -1375,50 +1443,50 @@ impl PubAckMessage {
 
     pub fn encode(&self) -> BytesMut {
         let mut buf = BytesMut::new();
-        
+
         // Message ID
         buf.put_u16(self.message_id);
-        
+
         // Date (timestamp in seconds)
         buf.put_u32(self.date);
-        
+
         // Status (2 bytes)
         buf.put_u8((self.status >> 8) as u8);
         buf.put_u8((self.status & 0xFF) as u8);
-        
+
         // Millisecond (2 bytes)
         buf.put_u8((self.millisecond >> 8) as u8);
         buf.put_u8((self.millisecond & 0xFF) as u8);
-        
+
         // Message ID string if present
         if let Some(ref msg_id) = self.msg_id {
             let msg_id_bytes = msg_id.as_bytes();
             buf.put_u16(msg_id_bytes.len() as u16);
             buf.extend_from_slice(msg_id_bytes);
         }
-        
+
         buf
     }
 
     pub fn decode(buf: &[u8]) -> io::Result<Self> {
         let mut cursor = std::io::Cursor::new(buf);
-        
+
         // Message ID
         let message_id = cursor.get_u16();
-        
+
         // Date
         let date = cursor.get_u32();
-        
+
         // Status
         let msb = cursor.get_u8() as u16;
         let lsb = cursor.get_u8() as u16;
         let status = (msb << 8) | lsb;
-        
+
         // Millisecond
         let mmb = cursor.get_u8() as u16;
         let lmb = cursor.get_u8() as u16;
         let millisecond = (mmb << 8) | lmb;
-        
+
         // Message ID string if present
         let mut msg_id = None;
         if cursor.position() < buf.len() as u64 {
@@ -1428,7 +1496,7 @@ impl PubAckMessage {
             msg_id = Some(String::from_utf8(msg_id_bytes)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?);
         }
-        
+
         Ok(Self {
             message_id,
             status,
@@ -1450,7 +1518,7 @@ mod digest_util {
         let mut context = Context::new();
         context.consume(data);
         let digest = context.compute();
-        
+
         // Copy 8 bytes starting from index 4
         let mut result = vec![0u8; SIGNATURE_MAX_LEN];
         result.copy_from_slice(&digest.0[4..4+SIGNATURE_MAX_LEN]);

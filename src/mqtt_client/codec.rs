@@ -30,6 +30,16 @@ impl MqttCodec {
             *crypto_info = Some(info);
         }
     }
+
+    pub fn decode_bytes(&mut self, src: &[u8]) -> Result<Message, io::Error> {
+        let mut data = BytesMut::from(src);
+        let message = self.decode(&mut data)?;
+        if let Some(message) = message {
+            Ok(message)
+        } else {
+            Err(io::Error::new(io::ErrorKind::Other, "Failed to decode message"))
+        }
+    }
 }
 
 impl Decoder for MqttCodec {
@@ -184,6 +194,26 @@ impl Decoder for MqttCodec {
             Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, 
                 format!("Failed to decode message: {}", e))),
         }
+    }
+    
+    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+        match self.decode(buf)? {
+            Some(frame) => Ok(Some(frame)),
+            None => {
+                if buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(io::Error::new(io::ErrorKind::Other, "bytes remaining on stream").into())
+                }
+            }
+        }
+    }
+    
+    fn framed<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Sized>(self, io: T) -> tokio_util::codec::Framed<T, Self>
+    where
+        Self: Sized,
+    {
+        tokio_util::codec::Framed::new(io, self)
     }
 }
 

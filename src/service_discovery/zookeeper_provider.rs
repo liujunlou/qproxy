@@ -1,10 +1,10 @@
-use std::time::Duration;
-use async_trait::async_trait;
-use zookeeper_async::{ZooKeeper, WatchedEvent, Watcher};
-use serde::{Serialize, Deserialize};
-use tracing::{info, error};
+use super::{ServiceDiscoveryBackend, ServiceInstance};
 use crate::errors::Error;
-use super::{ServiceInstance, ServiceDiscoveryBackend};
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tracing::{error, info};
+use zookeeper_async::{WatchedEvent, Watcher, ZooKeeper};
 
 struct ZkWatcher;
 impl Watcher for ZkWatcher {

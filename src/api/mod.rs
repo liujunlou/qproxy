@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use serde_json;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::errors::Error;
 use crate::playback::PlaybackService;

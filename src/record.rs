@@ -1,10 +1,8 @@
+use crate::model::TrafficRecord;
+use http::{Request, Response};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use std::collections::HashMap;
-use http::{Request, Response};
-use http_body_util::Full;
-use bytes::Bytes;
-use crate::model::TrafficRecord;
 
 pub struct RecordService {
     records: Arc<RwLock<HashMap<String, TrafficRecord>>>,

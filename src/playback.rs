@@ -4,13 +4,13 @@ use http::{Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use hyper_util::{client::legacy::{Builder, Client}, rt::TokioExecutor};
-use std::sync::Arc;
-use std::time::{SystemTime, Duration, UNIX_EPOCH};
-use tracing::{info, warn, error};
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use redis::{aio::ConnectionManager, AsyncCommands};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tracing::{error, info, warn};
 
 const CHECKPOINT_KEY_PREFIX: &str = "qproxy:checkpoint:";
 const SYNC_LOCK_PREFIX: &str = "qproxy:sync_lock:";
@@ -690,8 +690,7 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::{RequestData, ResponseData}, service_discovery::{ServiceInstance, ServiceRegistry}};
-    use http::Method;
+    use crate::{model::{RequestData, ResponseData}, service_discovery::ServiceInstance};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -779,6 +778,7 @@ mod tests {
             id: "old".to_string(),
             peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
+            codec: None,
             timestamp: old_time,
             request: RequestData {
                 method: Some("GET".to_string()),
@@ -799,6 +799,7 @@ mod tests {
             id: "new".to_string(),
             peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
+            codec: None,
             timestamp: now,
             request: RequestData {
                 method: Some("GET".to_string()),

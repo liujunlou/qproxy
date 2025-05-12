@@ -23,16 +23,15 @@ pub mod mqtt_client {
     pub mod client;
     pub mod codec;
     pub mod crypto;
-} 
+}
 
-use std::sync::Arc;
 use once_cell::sync::Lazy;
-use tokio::sync::Mutex;
 use playback::PlaybackService;
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::ServerConfig;
 use std::fs::File;
 use std::io::BufReader;
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // 重新导出main.rs中的静态变量和函数
 pub static PLAYBACK_SERVICE: Lazy<Arc<Mutex<Option<Arc<PlaybackService>>>>> = 
