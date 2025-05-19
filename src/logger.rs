@@ -38,6 +38,7 @@ pub fn init_logger(opts: &LoggingOptions) -> Result<(), Error> {
         .rotation(Rotation::DAILY)
         .max_log_files(opts.rotation.max_files as usize)
         .filename_prefix(&opts.file_name_pattern)
+        .filename_suffix("log")
         .build(&log_dir)
         .map_err(|e| Error::Logger(e.to_string()))?;
 

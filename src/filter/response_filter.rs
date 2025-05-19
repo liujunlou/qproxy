@@ -4,6 +4,7 @@ use crate::{errors::Error, model::{Protocol, TrafficRecord}, mqtt_client::{codec
 
 use super::Filter;
 
+
 pub struct ResponseFilter {
     mqtt_codec: Arc<RwLock<MqttCodec>>,
     fields: Option<Vec<String>>,
@@ -15,6 +16,10 @@ impl ResponseFilter {
             mqtt_codec: Arc::new(RwLock::new(MqttCodec::new())),
             fields,
         }
+    }
+
+    pub fn set_fields(&mut self, fields: Vec<String>) {
+        self.fields = Some(fields);
     }
 }
 

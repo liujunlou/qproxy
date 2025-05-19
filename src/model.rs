@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{errors::Error, mqtt_client::message::MessageType};
 
@@ -9,7 +9,7 @@ pub struct TrafficRecord {
     pub peer_id: String,
     pub protocol: Protocol,
     pub codec: Option<MessageType>,
-    pub timestamp: SystemTime,
+    pub timestamp: u128,
     pub request: RequestData,
     pub response: ResponseData,
 }
@@ -53,7 +53,7 @@ impl TrafficRecord {
             peer_id: service_name.clone(),
             protocol: Protocol::HTTP,
             codec: None,
-            timestamp: SystemTime::now(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
             request: RequestData {
                 method: Some(method),
                 service_name: Some(service_name.clone()),
@@ -76,7 +76,7 @@ impl TrafficRecord {
             protocol: Protocol::TCP,
             // TODO 需要根据具体的消息类型来确定
             codec: Some(MessageType::Publish),
-            timestamp: SystemTime::now(),
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
             request: RequestData {
                 method: None,
                 service_name: Some(service_name.to_string()),

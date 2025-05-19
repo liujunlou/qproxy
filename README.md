@@ -1,29 +1,36 @@
 # QProxy
 
-QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流量录制和回放功能。它可以在一个可用区录制流量，并在另一个可用区回放流量。
+QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录制和回放，其中包括协议有：TCP、HTTP/HTTPS。它包含两种角色：Record 节点和 Playback 节点。Record 节点负责录制流量并存储到 Redis，Playback 节点负责代理流量并回放录制的流量。
 
 ## 功能特性
 
-- 支持 HTTP/HTTPS 代理
-- 支持 TCP 代理（可选 TLS）
-- 流量录制功能
-- 流量回放功能
-- 跨可用区部署
-- MQTT 客户端支持
+### Record 节点
+- 支持 HTTP/HTTPS 流量录制
+- 支持 TCP 流量录制（可选 TLS）
+- 将录制的流量缓存到 Redis
+- 提供 HTTP API 接口供 Playback 节点拉取录制的流量
+
+### Playback 节点
+- 支持 HTTP/HTTPS 流量代理
+- 支持 TCP 流量代理（可选 TLS）
+- 定时从 Record 节点拉取录制的流量
+- 在本地可用区回放录制的流量
 
 ## 配置说明
 
 配置文件使用 JSON 格式，默认名为 `config.json`。你也可以通过环境变量 `CONFIG_PATH` 指定配置文件路径。
 
-配置文件示例：
+### Record 节点配置示例：
 ```json
 {
+    "mode": "Record",
     "http": {
         "host": "127.0.0.1",
         "port": 8080,
         "downstream": "http://localhost:8081"
     },
     "tcp": {
+        "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
         "downstream": ["localhost:8083"],
@@ -32,26 +39,60 @@ QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流�
             "tls_key": "key.pem"
         }
     },
-    "mode": "Record",
+    "redis": {
+        "url": "redis://localhost:6379",
+        "pool_size": 10
+    }
+}
+```
+
+### Playback 节点配置示例：
+```json
+{
+    "mode": "Playback",
+    "http": {
+        "host": "127.0.0.1",
+        "port": 8080,
+        "downstream": "http://localhost:8081"
+    },
+    "tcp": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8082,
+        "downstream": ["localhost:8083"],
+        "tls": {
+            "tls_cert": "cert.pem",
+            "tls_key": "key.pem"
+        }
+    },
     "peer": {
-        "host": "remote-host",
+        "host": "record-node-host",
         "port": 8084,
         "tls": true
+    },
+    "sync": {
+        "enabled": true,
+        "interval": 60
     }
 }
 ```
 
 ## 部署说明
 
-1. 在录制节点：
-   - 设置 `mode` 为 `"Record"`
-   - 配置 `peer` 指向回放节点
-   - 配置 `http` 和 `tcp` 的下游服务器地址
+### Record 节点部署
+1. 配置 `mode` 为 `"Record"`
+2. 配置 HTTP/TCP 监听地址和端口
+3. 配置下游服务器地址
+4. 配置 Redis 连接信息
+5. 启动服务
 
-2. 在回放节点：
-   - 设置 `mode` 为 `"Playback"`
-   - 不需要配置 `peer`
-   - 配置监听地址和端口
+### Playback 节点部署
+1. 配置 `mode` 为 `"Playback"`
+2. 配置 HTTP/TCP 监听地址和端口
+3. 配置下游服务器地址
+4. 配置 Record 节点地址（peer）
+5. 配置同步间隔
+6. 启动服务
 
 ## 使用方法
 
@@ -61,8 +102,8 @@ QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流�
    ```
 
 2. 准备配置文件：
-   - 复制 `config.json` 到适当位置
-   - 根据需要修改配置
+   - 根据节点角色选择对应的配置模板
+   - 修改配置参数
 
 3. 运行服务：
    ```bash
@@ -71,6 +112,31 @@ QProxy 是一个支持 HTTP/HTTPS 和 TCP 协议的代理服务器，具有流�
 
    # 使用指定配置文件
    CONFIG_PATH=/path/to/config.json ./target/release/qproxy
+   ```
+4. API接口
+   ```
+   # 拉取同步记录
+   curl -X GET 'http://127.0.0.1:8080/sync?peer_id=default&shard_id=default'
+
+   # 上报录制流量
+   curl -X POST 'http://127.0.0.1:8080/sync' \
+   --header 'Content-Type: application/json' \
+   --data '{
+      
+   }'
+
+   # 提交同步位点
+   curl -X POST 'http://127.0.0.1:8080/commit' \
+   --header 'Content-Type: application/json' \
+   --data '{
+      "peer_id": "default",
+      "shard_id": "default",
+      "last_sync_time": 1747629658,
+      "last_record_id": "0",
+      "status": "Completed",
+      "retry_count": 0,
+      "error_message": ""
+   }'
    ```
 
 ## MQTT 客户端使用
@@ -172,11 +238,11 @@ QProxy 采用模块化设计，主要包含以下组件：
 
 ## API 接口
 
-QProxy 提供以下 HTTP API 接口：
+### Record 节点 API
 
-### 流量记录查询
+#### 流量记录查询
 ```
-GET /api/records
+GET /sync
 查询已录制的流量记录
 
 参数：
@@ -185,20 +251,143 @@ GET /api/records
 - limit: 返回记录数量限制
 ```
 
-### 流量记录删除
+### 代理流量接收
 ```
-DELETE /api/records/{id}
-删除指定的流量记录
+POST /sync
+接收代理的流量到在当前可用区回放，并响应结果
 ```
 
-### 系统状态查询
+#### 系统状态查询
 ```
 GET /api/status
 查询系统运行状态，包括：
 - 当前模式（录制/回放）
 - 已录制流量数量
+- Redis 存储状态
 - 系统资源使用情况
 ```
+
+#### 健康检查接口
+```
+GET /health
+检查服务健康状态，返回：
+- 服务状态（UP/DOWN）
+- 当前模式（录制/回放）
+- 组件状态：
+  - Redis 连接状态
+  - 流量录制状态
+  - 系统资源状态
+- 最近一次检查时间
+- 错误信息（如果有）
+
+响应示例：
+{
+    "status": "UP",
+    "components": {
+        "redis": "UP",
+        "recording": "UP",
+        "system": "UP"
+    },
+    "last_check": "2024-03-20T10:00:00Z",
+    "error": null
+}
+```
+
+## 监控指标
+
+### 1. 性能指标
+
+#### Record 节点
+- TPS（每秒事务数）
+  - 总 TPS
+  - 按协议分类的 TPS（HTTP/TCP）
+  - 按接口分类的 TPS
+- 请求耗时
+  - 平均响应时间
+  - P50/P90/P99 响应时间
+  - 按协议分类的响应时间
+- 错误率
+  - 总体错误率
+  - 按错误类型统计
+  - 按协议分类的错误率
+
+#### Playback 节点
+- 回放 TPS
+  - 总回放 TPS
+  - 按协议分类的回放 TPS
+- 回放延迟
+  - 平均回放延迟
+  - P50/P90/P99 回放延迟
+- 回放错误率
+  - 总体回放错误率
+  - 按错误类型统计
+
+### 2. 业务指标
+
+#### Record 节点
+- 录制流量大小
+  - 总流量大小
+  - 按协议分类的流量大小
+  - 按时间段的流量分布
+- 录制成功率
+  - 总体录制成功率
+  - 按协议分类的录制成功率
+- 存储状态
+  - Redis 存储使用量
+  - 存储增长率
+  - 数据保留时间
+
+#### Playback 节点
+- 回放成功率
+  - 总体回放成功率
+  - 按协议分类的回放成功率
+  - 按时间段的回放成功率
+- 同步延迟
+  - 与 Record 节点的同步延迟
+  - 按协议分类的同步延迟
+  - 同步失败率
+- 回放准确性
+  - 响应匹配率
+  - 错误匹配率
+  - 数据一致性检查
+
+### 3. 系统指标
+
+- CPU 使用率
+  - 总体 CPU 使用率
+  - 按核心的使用率
+  - 按进程的使用率
+- 内存使用
+  - 总内存使用量
+  - 内存使用趋势
+  - 内存分配情况
+- 网络 I/O
+  - 网络吞吐量
+  - 连接数
+  - 网络错误率
+- 磁盘 I/O
+  - 磁盘读写速率
+  - 磁盘使用量
+  - I/O 等待时间
+
+### 4. 告警阈值
+
+系统预设了以下告警阈值：
+
+1. 性能告警
+   - TPS 超过 1000/s
+   - 响应时间超过 1s
+   - 错误率超过 1%
+
+2. 业务告警
+   - 录制成功率低于 99%
+   - 回放成功率低于 95%
+   - 同步延迟超过 5s
+
+3. 系统告警
+   - CPU 使用率超过 80%
+   - 内存使用率超过 85%
+   - 磁盘使用率超过 90%
 
 ## 性能优化
 
@@ -216,25 +405,6 @@ GET /api/status
    - 支持 HTTP/2 以减少连接数
    - 使用连接池复用下游连接
    - 支持流量压缩
-
-## 监控指标
-
-QProxy 提供以下监控指标：
-
-1. 基础指标
-   - QPS（每秒请求数）
-   - 响应时间分布
-   - 错误率
-
-2. 资源指标
-   - CPU 使用率
-   - 内存使用量
-   - 网络 I/O
-
-3. 业务指标
-   - 录制流量大小
-   - 回放成功率
-   - 同步延迟
 
 ## 常见问题
 
@@ -255,10 +425,7 @@ QProxy 提供以下监控指标：
 
 ## 测试
 
-QProxy 提供了完整的测试用例，包括单元测试和集成测试。
-
 ### 运行测试
-
 ```bash
 # 运行所有测试
 cargo test

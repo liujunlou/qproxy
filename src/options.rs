@@ -6,14 +6,22 @@ use crate::errors::Error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Options {
-    pub http: HttpOptions,
-    pub tcp: TcpOptions,
+    // 节点的角色
     pub mode: ProxyMode,
+    // http代理节点
+    pub http: HttpOptions,
+    // tcp代理节点
+    pub tcp: TcpOptions,
+    // 流量回放服务节点
     pub peer: Option<PeerOptions>,
+    // 服务发现
     pub service_discovery: ServiceDiscoveryOptions,
-    pub logging: LoggingOptions,
-    pub redis: RedisOptions,
+    // 同步
     pub sync: SyncOptions,
+    // redis
+    pub redis: RedisOptions,
+    // 日志
+    pub logging: LoggingOptions,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -54,9 +62,10 @@ pub struct PeerOptions {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum ProxyMode {
+    // 流量录制
     Record,
+    // 流量回放
     Playback,
-    Forward,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -148,3 +157,61 @@ impl Options {
             .map_err(|e|Error::Config(e.to_string()))
     }
 } 
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            mode: ProxyMode::Record,
+            http: HttpOptions {
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+                downstream: "http://localhost:8080".to_string(),
+                filter_fields: None,
+            },
+            tcp: TcpOptions {
+                enabled: false,
+                host: "0.0.0.0".to_string(),
+                port: 8080,
+                downstream: vec![],
+                tls: None,
+            },
+            peer: None,
+            service_discovery: ServiceDiscoveryOptions {
+                provider: ServiceDiscoveryProvider::Static,
+                config: ServiceDiscoveryConfig {
+                    static_services: None,
+                    zookeeper: None,
+                    kubernetes: None,
+                },
+            },
+            sync: SyncOptions {
+                enabled: false,
+                shards: 1,
+            },
+            redis: RedisOptions {
+                url: "redis://localhost:6379".to_string(),
+                pool_size: None,
+                connection_timeout: None,
+                retry_count: None,
+            },
+            logging: LoggingOptions {
+                level: "info".to_string(),
+                directory: "logs".to_string(),
+                file_name_pattern: "log-%Y-%m-%d.log".to_string(),
+                rotation: LogRotationOptions {
+                    max_size_mb: 100,
+                    max_files: 10,
+                    compress: true,
+                },
+                format: LogFormatOptions {
+                    timestamp: true,
+                    level: true,
+                    target: true,
+                    thread_id: true,
+                    file: true,
+                    line_number: true,
+                },
+            },
+        }
+    }
+}

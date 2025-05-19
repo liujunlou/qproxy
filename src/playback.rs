@@ -21,11 +21,25 @@ const LOCK_EXPIRE_SECS: u64 = 300; // 5分钟锁过期时间
 pub struct CheckpointInfo {
     pub peer_id: String,
     pub shard_id: String,
-    pub last_sync_time: u64,
+    pub last_sync_time: u128,
     pub last_record_id: String,
     pub status: SyncStatus,
     pub retry_count: u32,
     pub error_message: Option<String>,
+}
+
+impl CheckpointInfo {
+    pub fn new(peer_id: &str, shard_id: &str) -> Result<Self, Error> {
+        Ok(Self {
+            peer_id: peer_id.to_string(),
+            shard_id: shard_id.to_string(),
+            last_sync_time: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+            last_record_id: String::new(),
+            status: SyncStatus::Pending,
+            retry_count: 0,
+            error_message: None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,7 +133,24 @@ impl PlaybackService {
     /// 更新同步位点
     pub async fn update_checkpoint(&self, checkpoint: &CheckpointInfo) -> Result<(), Error> {
         let key = self.get_checkpoint_key(&checkpoint.peer_id, &checkpoint.shard_id);
-        let json = serde_json::to_string(&checkpoint).unwrap();
+        let old: Option<String> = redis::cmd("GET")
+            .arg(&key)
+            .query_async(&mut self.redis_pool.as_ref().clone())
+            .await?;
+
+        let mut new_checkpoint = checkpoint.clone();
+        if let Some(old) = old {
+            let old_checkpoint: CheckpointInfo = serde_json::from_str(&old)?;
+            if old_checkpoint.last_sync_time < checkpoint.last_sync_time {
+                new_checkpoint.last_sync_time = old_checkpoint.last_sync_time;
+                new_checkpoint.last_record_id = old_checkpoint.last_record_id.clone();
+            }
+        } else {
+            // 如果旧的checkpoint不存在，则直接更新
+            info!("derict update checkpoint: {}_{}", checkpoint.peer_id, checkpoint.shard_id);
+        };
+
+        let json = serde_json::to_string(&new_checkpoint).unwrap();
         let mut conn = self.redis_pool.as_ref().clone();
         conn.set(&key, json).await?;
         Ok(())
@@ -130,7 +161,13 @@ impl PlaybackService {
         let key = self.get_checkpoint_key(peer_id, shard_id);
         // 拉取同步记录
         let mut conn = self.redis_pool.as_ref().clone();
-        let json: Option<String> = conn.get(&key).await?;
+        let json: Option<String> = match conn.get(&key).await {
+            Ok(json) => json,
+            Err(e) => {
+                error!("get checkpoint failed: {:?}", e);
+                return Err(Error::Redis(e));
+            }
+        };
         
         match json {
             Some(j) => {
@@ -209,7 +246,7 @@ impl PlaybackService {
         Ok(())
     }
 
-    /// 获取需要同步的记录
+    /// 获取需要同步的记录，从checkpoint开始（如果checkpoint不存在，则从0开始），到之后的5分钟的记录
     /// 
     /// # 参数
     /// * `peer_id` - 对等节点标识
@@ -218,26 +255,68 @@ impl PlaybackService {
     /// # 返回值
     /// 返回需要同步的记录列表
     pub async fn get_records_for_sync(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, Error> {
-        let checkpoint = self.get_checkpoint(peer_id, shard_id).await?;
+        let cp = if let Some(cp) = self.get_checkpoint(peer_id, shard_id).await? {
+            cp
+        } else {
+            // 初始化checkpoint, 并更新到redis, 防止初始化期间没有checkpoint
+            let mut cp = CheckpointInfo::new(peer_id, shard_id)?;
+            // 设置状态为进行中，防止分布式环境下并行同步任务
+            cp.status = SyncStatus::InProgress;
+            cp
+        };
+
+        let since = UNIX_EPOCH + Duration::from_millis(cp.last_sync_time as u64);
         let key = self.get_traffic_key(peer_id, shard_id);
         
-        let since = checkpoint.as_ref()
-            .map(|cp| UNIX_EPOCH + Duration::from_secs(cp.last_sync_time))
-            .unwrap_or_else(|| SystemTime::now() - Duration::from_secs(3600));
-        
-        let min_score = since.duration_since(UNIX_EPOCH)?.as_secs() as f64;
-        
         let mut conn = self.redis_pool.as_ref().clone();
-        // 获取需要同步的记录，todo 减少时间范围
-        let records: Vec<String> = conn.zrangebyscore(&key, min_score, "+inf").await?;
+        let mut min_score = since.duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        let mut max_score = (since + Duration::from_secs(300)).duration_since(UNIX_EPOCH)?.as_millis() as u64;
         
+        let start_time = SystemTime::now();
+        let mut records: Vec<String> = Vec::new();
+        let max_records = 1000;
+        let max_duration = Duration::from_secs(5);
+
+        loop {
+            // 获取指定范围内的记录，并限制数量，避免数据量太大
+            match conn.zrangebyscore_limit::<_, _, _, Vec<String>>(&key, min_score, max_score, 0, max_records as isize).await {
+                Ok(tmp) => {
+                    records.extend(tmp.into_iter().map(|x| x.to_string()));
+                    // 如果已经达到最大记录数，立即退出
+                    if records.len() >= max_records {
+                        info!("Reached maximum record limit of {}", max_records);
+                        break;
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to get records: {:?}", e);
+                    break;
+                }
+            }
+
+            // 检查是否超时
+            if start_time.elapsed().unwrap_or(Duration::from_secs(0)) >= max_duration {
+                info!("Sync operation timed out after {:?}", max_duration);
+                break;
+            }
+
+            // 检查是否已经到达当前时间
+            let current_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+            if max_score >= current_time {
+                info!("Reached current time boundary");
+                break;
+            }
+
+            // 更新min_score和max_score，获取下一步长的回放记录
+            min_score = max_score;
+            max_score += 300;
+        }
+
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
-                if let Some(cp) = &checkpoint {
-                    if record.timestamp >= since && record.id != cp.last_record_id {
-                        result.push(record);
-                    }
+                if record.timestamp >= since.duration_since(UNIX_EPOCH)?.as_millis() as u128 && record.id != cp.last_record_id {
+                    result.push(record);
                 }
             }
         }
@@ -254,7 +333,7 @@ impl PlaybackService {
     pub async fn add_record(&self, record: TrafficRecord) -> Result<(), Error> {
         let key = self.get_traffic_key(&record.peer_id, "default");
         let json = serde_json::to_string(&record)?;
-        let score = record.timestamp.duration_since(UNIX_EPOCH)?.as_secs() as f64;
+        let score = record.timestamp as u64;
         
         let mut conn = self.redis_pool.as_ref().clone();
         conn.zadd(&key, &json, score).await?;
@@ -496,12 +575,12 @@ impl PlaybackService {
     /// 
     /// # 返回值
     /// 返回指定时间段内的流量记录列表
-    pub async fn get_recent_records(&self, peer_id: &str, shard_id: &str, since: Option<SystemTime>) -> Result<Vec<TrafficRecord>, Error> {
+    pub async fn get_recent_records(&self, peer_id: &str, shard_id: &str, since: Option<u128>) -> Result<Vec<TrafficRecord>, Error> {
         let key = self.get_traffic_key(peer_id, shard_id);
         let since = since.unwrap_or_else(|| {
-            SystemTime::now() - Duration::from_secs(3600) // 默认获取最近一小时的记录
+            SystemTime::now().checked_sub(Duration::from_secs(3600)).unwrap().duration_since(UNIX_EPOCH).unwrap().as_millis() // 默认获取最近一小时的记录
         });
-        let min_score = since.duration_since(UNIX_EPOCH)?.as_secs() as f64;
+        let min_score = since.clone() as u64;
         
         let mut conn = self.redis_pool.as_ref().clone();
         let records: Vec<String> = conn.zrangebyscore(&key, min_score, "+inf").await?;
@@ -561,10 +640,7 @@ impl PlaybackService {
 
             // 获取最后一条记录的信息
             let last_record = sorted_records.last().unwrap();
-            let last_sync_time = last_record.timestamp
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
+            let last_sync_time = last_record.timestamp;
 
             // 添加所有记录
             for record in sorted_records.clone() {
@@ -691,7 +767,7 @@ impl PlaybackService {
 mod tests {
     use super::*;
     use crate::{model::{RequestData, ResponseData}, service_discovery::ServiceInstance};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, time::Instant};
 
     #[tokio::test]
     async fn test_record_storage_and_retrieval() {
@@ -779,7 +855,7 @@ mod tests {
             peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
             codec: None,
-            timestamp: old_time,
+            timestamp: old_time.duration_since(UNIX_EPOCH).unwrap().as_millis(),
             request: RequestData {
                 method: Some("GET".to_string()),
                 service_name: Some("http://test/old".to_string()),
@@ -800,7 +876,7 @@ mod tests {
             peer_id: "test".to_string(),
             protocol: Protocol::HTTP,
             codec: None,
-            timestamp: now,
+            timestamp: now.duration_since(UNIX_EPOCH).unwrap().as_millis(),
             request: RequestData {
                 method: Some("GET".to_string()),
                 service_name: Some("http://test/new".to_string()),
@@ -819,7 +895,7 @@ mod tests {
         service.add_record(new_record.clone()).await.unwrap();
 
         // 获取最近1小时的记录
-        let recent_records = service.get_recent_records("test", "default", Some(now - Duration::from_secs(3600))).await.unwrap();
+        let recent_records = service.get_recent_records("test", "default", Some((now - Duration::from_secs(3600)).duration_since(UNIX_EPOCH).unwrap().as_millis())).await.unwrap();
         assert_eq!(recent_records.len(), 1);
         assert_eq!(recent_records[0].id, "new");
     }

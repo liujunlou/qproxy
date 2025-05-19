@@ -1,3 +1,5 @@
+use crate::PLAYBACK_SERVICE;
+
 use super::codec::MqttCodec;
 use super::crypto::{self, CryptoInfo};
 use super::message::{
@@ -20,7 +22,6 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
-use uuid::Uuid;
 
 // A struct to track published messages waiting for acknowledgment
 struct OutgoingMessage {
@@ -243,7 +244,8 @@ impl MqttClient {
                                     );
 
                                     // 尝试获取回放服务
-                                    if let Ok(playback_service) = crate::get_playback_service().await {
+                                    let playback_service = PLAYBACK_SERVICE.lock().await;
+                                    if let Some(playback_service) = playback_service.as_ref() {
                                         // 1. 先存储到 Redis
                                         if let Err(err) = playback_service.add_record(record.clone()).await {
                                             error!("Failed to store MQTT message to Redis: {}", err);
@@ -254,7 +256,10 @@ impl MqttClient {
                                         // 2. 然后触发本地回放
                                         playback_service.trigger_replay(&record).await;
                                         debug!("Triggered local replay for MQTT message from topic '{}'", topic);
-                                    }
+                                    } else {
+                                        error!("Playback service not initialized");
+                                        continue;
+                                    };
 
                                     // Forward to user
                                     if let Err(err) = tx_from_broker.send(Ok(message)).await {
@@ -294,7 +299,8 @@ impl MqttClient {
                                     );
 
                                     // 尝试获取回放服务
-                                    if let Ok(playback_service) = crate::get_playback_service().await {
+                                    let playback_service = PLAYBACK_SERVICE.lock().await;
+                                    if let Some(playback_service) = playback_service.as_ref() {
                                         // 1. 先存储到 Redis
                                         if let Err(err) = playback_service.add_record(record.clone()).await {
                                             error!("Failed to store Query message to Redis: {}", err);
@@ -305,7 +311,10 @@ impl MqttClient {
                                         // 2. 然后触发本地回放
                                         playback_service.trigger_replay(&record).await;
                                         debug!("Triggered local replay for Query message from topic '{}'", topic);
-                                    }
+                                    } else {
+                                        error!("Playback service not initialized");
+                                        continue;
+                                    };
 
                                     // 回复 QueryAck
                                     if let Some(packet_id) = query.packet_id {

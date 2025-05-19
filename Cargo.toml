@@ -63,6 +63,12 @@ rustls-pki-types = "1.12.0"
 aes = "0.8"
 aes-gcm = "0.10.1"
 hex = "0.4"
+# 用于获取系统信息
+sysinfo = "0.35"
+prometheus = "0.14"
+# 用于在scope结束时执行清理
+scopeguard = "1.2"
+
 #  用于自定义派生宏
 syn = { version = "2.0", features = ["full"] }
 quote = "1.0"

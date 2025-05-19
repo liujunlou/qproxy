@@ -18,8 +18,12 @@ pub enum Error {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    // http错误
     #[error("HTTP error: {0}")]
     Http(#[from] hyper::Error),
+
+    #[error("HTTP1 error: {0}")]
+    Http1(String),
 
     #[error("Request error: {0}")]
     Request(#[from] reqwest::Error),
@@ -27,9 +31,11 @@ pub enum Error {
     #[error("Request error: {0}")]
     Request2(#[from] hyper_util::client::legacy::Error),
 
+    // redis错误
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
 
+    // 序列化错误
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
@@ -44,6 +50,11 @@ pub enum Error {
     Mqtt(String),
     #[error("Decode error: {0}")]
     MqttDecodeError(String),
+
+    // 监控指标错误
+    #[error("Metric error: {0}")]
+    Metric(prometheus::Error),
+
 }
 
 impl From<String> for Error {

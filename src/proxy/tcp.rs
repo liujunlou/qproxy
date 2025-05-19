@@ -7,51 +7,69 @@ use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info};
 
 use crate::{
-    errors::Error, get_playback_service, model::TrafficRecord, options::{Options, ProxyMode}
+    errors::Error, get_shutdown_rx, load_tls, model::TrafficRecord, options::{Options, ProxyMode}, PLAYBACK_SERVICE
 };
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let addr = format!("{}:{}", options.tcp.host, options.tcp.port);
-    let addr = SocketAddr::from_str(&addr).map_err(|e| Error::Config(e.to_string()))?;
+    let addr = SocketAddr::from_str(&addr).expect("invalid socket address");
     let listener = TcpListener::bind(addr).await?;
-    info!("TCP proxy server started at {}", addr);
-
+    info!("TCP proxy server listening on {}", addr);
+    
+    let mut shutdown_rx = get_shutdown_rx().await;
+    
     loop {
-        let (stream, _) = listener.accept().await?;
-        let options = options.clone();
+        tokio::select! {
+            accept_result = listener.accept() => {
+                match accept_result {
+                    Ok((stream, addr)) => {
+                        info!("New TCP connection from {}", addr);
+                        let options = options.clone();
 
-        if let Some(tls) = &options.tcp.tls {
-            let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
-            let tls_acceptor = TlsAcceptor::from(tls_config);
-            
-            tokio::task::spawn(async move {
-                if let Ok(upstream) = tls_acceptor.accept(stream).await {
-                    // 透传请求流量
-                    match handle_tcp_proxy(upstream, options).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("Failed to handle TCP proxy: {:?}", e);
+                        if let Some(tls) = &options.tcp.tls {
+                            // 创建TLS接受器
+                            let tls_config = load_tls(&tls.tls_cert, &tls.tls_key);
+                            let acceptor = TlsAcceptor::from(tls_config);
+
+                            tokio::spawn(async move {
+                                if let Ok(upstream) = acceptor.accept(stream).await {
+                                    // 透传请求流量
+                                    match handle_tls_proxy(upstream, options).await {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            error!("Failed to handle TCP proxy: {:?}", e);
+                                        }
+                                    };
+                                } else {
+                                    error!("failed to accept TLS connection");
+                                }
+                            });
+                        } else {
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_proxy(stream, options).await {
+                                    error!("Error handling TCP connection: {}", e);
+                                }
+                            });
                         }
-                    };
-                } else {
-                    error!("failed to accept TLS connection");
-                }
-            });
-        } else {
-            tokio::task::spawn(async move {
-                // 透传请求流量
-                match handle_proxy(stream, options).await {
-                    Ok(_) => {}
-                    Err(e) => {
-                        error!("Failed to handle TCP proxy: {:?}", e);
                     }
-                };
-            });
+                    Err(e) => {
+                        error!("Error accepting TCP connection: {}", e);
+                        continue;
+                    }
+                }
+            }
+            _ = shutdown_rx.recv() => {
+                info!("TCP server received shutdown signal");
+                break;
+            }
         }
     }
+    
+    info!("TCP proxy server shutdown complete");
+    Ok(())
 }
 
-async fn handle_tcp_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) -> Result<(), Error> {
+async fn handle_tls_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) -> Result<(), Error> {
     let (mut ri, mut wi) = tokio::io::split(inbound);
     let mut buffer = [0u8; 8192];
     // 判断是录制的流量还是回放的流量
@@ -64,8 +82,12 @@ async fn handle_tcp_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) 
                     Ok(n) => {
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // 写入缓存
-                        let playback_service = get_playback_service().await?;
-                        playback_service.add_record(record).await?;
+                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                        if let Some(playback_service) = playback_service.as_ref() {
+                            playback_service.add_record(record).await?;
+                        } else {
+                            error!("Playback service not initialized");
+                        }
                     }
                     Err(e) => {
                         error!("Failed to read from client: {:?}", e);
@@ -74,7 +96,7 @@ async fn handle_tcp_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) 
                 }
             }
         }
-        ProxyMode::Forward => {
+        ProxyMode::Playback => {
             // 双向转发数据
             loop {
                 match ri.read(&mut buffer).await {
@@ -120,10 +142,6 @@ async fn handle_tcp_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) 
                     }
                 }
             }
-        }
-        ProxyMode::Playback => {
-            // TCP 不需要回放
-            return Err(Error::Config("Playback mode is not supported for TCP proxy".to_string()));
         }
     }
     
@@ -144,8 +162,12 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                     Ok(n) => {
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // 写入缓存
-                        let playback_service = get_playback_service().await?;
-                        playback_service.add_record(record).await?;
+                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                        if let Some(playback_service) = playback_service.as_ref() {
+                            playback_service.add_record(record).await?;
+                        } else {
+                            error!("Playback service not initialized");
+                        }
                         // TODO 是否进行响应
                     }
                     Err(e) => {
@@ -155,7 +177,7 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                 }
             }
         }
-        ProxyMode::Forward => {
+        ProxyMode::Playback => {
             // 双向转发数据
             loop {
                 match ri.read(&mut buffer).await {
@@ -201,10 +223,6 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                     }
                 }
             }
-        }
-        ProxyMode::Playback => {
-            // TCP 不需要回放
-            return Err(Error::Config("Playback mode is not supported for TCP proxy".to_string()));
         }
     }
 

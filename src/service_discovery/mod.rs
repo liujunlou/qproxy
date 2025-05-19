@@ -89,6 +89,7 @@ impl ServiceDiscoveryBackend for ServiceDiscoveryBackendEnum {
 }
 
 pub struct ServiceRegistry {
+    // 被代理服务 服务发现组件，这里如果要支持动态监听服务节点，需要改为Arc<RwLock<ServiceDiscoveryBackendEnum>>
     backend: Arc<ServiceDiscoveryBackendEnum>,
     services_cache: Arc<RwLock<HashMap<String, ServiceInstance>>>,
 }
@@ -124,22 +125,30 @@ impl ServiceRegistry {
                         zk_config.hosts.clone(),
                         zk_config.base_path.clone(),
                         zk_config.timeout.unwrap_or(30000),
-                    ).await;
+                    ).await?;
                     Arc::new(ServiceDiscoveryBackendEnum::Zookeeper(zk))
                 } else {
-                    return Err(Error::Config("Zookeeper configuration is missing".to_string()));
+                    warn!("Zookeeper configuration is missing, falling back to static provider");
+                    Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
                 }
             }
             ServiceDiscoveryProvider::Kubernetes => {
                 if let Some(k8s_config) = &options.service_discovery.config.kubernetes {
-                    Arc::new(ServiceDiscoveryBackendEnum::Kubernetes(KubernetesServiceDiscovery::new(
+                    match KubernetesServiceDiscovery::new(
                         k8s_config.namespace.clone(),
                         k8s_config.service_account_token_path.clone(),
                         k8s_config.api_server.clone(),
                         k8s_config.label_selector.clone(),
-                    ).await?))
+                    ).await {
+                        Ok(k8s) => Arc::new(ServiceDiscoveryBackendEnum::Kubernetes(k8s)),
+                        Err(e) => {
+                            error!("Failed to initialize Kubernetes provider: {}, falling back to static provider", e);
+                            Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
+                        }
+                    }
                 } else {
-                    return Err(Error::Config("Kubernetes configuration is missing".to_string()));
+                    warn!("Kubernetes configuration is missing, falling back to static provider");
+                    Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
                 }
             }
         };
@@ -161,6 +170,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
+    /// 注册服务节点
     pub async fn register(&self, instance: ServiceInstance) -> Result<(), Error> {
         self.backend.register(instance.clone()).await?;
         let mut cache = self.services_cache.write().await;
@@ -168,6 +178,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
+    /// 注销服务节点
     pub async fn deregister(&self, name: &str) -> Result<(), Error> {
         self.backend.deregister(name).await?;
         let mut cache = self.services_cache.write().await;
@@ -175,6 +186,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
+    /// 查找本地服务节点
     pub async fn find_local_service(&self, name: &str) -> Result<Option<ServiceInstance>, Error> {
         // 先查缓存
         let cache = self.services_cache.read().await;
@@ -198,6 +210,7 @@ impl ServiceRegistry {
         Ok(cache.values().cloned().collect())
     }
 
+    /// 从URL中提取服务名称
     pub fn extract_service_name(&self, url: &str) -> Result<String, Error> {
         let parsed_url = Url::parse(url)
             .map_err(|e| Error::Config(format!("Invalid URL: {}", e)))?;
@@ -213,6 +226,7 @@ impl ServiceRegistry {
         Ok(service_name)
     }
 
+    /// 从URL中查找本地服务节点
     pub async fn find_local_service_from_url(&self, original_url: &str) -> Result<Option<ServiceInstance>, Error> {
         let service_name = self.extract_service_name(original_url)?;
         self.find_local_service(&service_name).await

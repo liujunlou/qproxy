@@ -27,16 +27,16 @@ pub struct ZookeeperServiceDiscovery {
 }
 
 impl ZookeeperServiceDiscovery {
-    pub async fn new(hosts: Vec<String>, base_path: String, timeout: u64) -> Self {
+    pub async fn new(hosts: Vec<String>, base_path: String, timeout: u64) -> Result<Self, Error> {
         let connect_string = hosts.join(",");
         let zk = ZooKeeper::connect(&connect_string, Duration::from_millis(timeout), ZkWatcher)
             .await
-            .expect("Failed to connect to ZooKeeper");
+            .map_err(|e| Error::ServiceDiscovery(format!("Failed to connect to ZooKeeper: {}", e)))?;
         
-        Self {
+        Ok(Self {
             zk,
             base_path,
-        }
+        })
     }
 
     async fn ensure_path(&self, path: &str) -> Result<(), Error> {

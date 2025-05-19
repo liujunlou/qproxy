@@ -10,12 +10,14 @@ pub struct StaticServiceDiscovery {
 }
 
 impl StaticServiceDiscovery {
+    /// 创建新的静态服务发现实例
     pub fn new() -> Self {
         Self {
             services: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
+    /// 添加服务实例
     pub async fn add_service(&self, instance: ServiceInstance) -> Result<(), Error> {
         let mut services = self.services.write().await;
         services.insert(instance.name.clone(), instance);
