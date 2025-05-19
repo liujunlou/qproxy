@@ -1,4 +1,8 @@
-use crate::PLAYBACK_SERVICE;
+use crate::{
+    PLAYBACK_SERVICE,
+    options::{Options, ProxyMode},
+    proxy::tcp::handle_tls_proxy,
+};
 
 use super::codec::MqttCodec;
 use super::crypto::{self, CryptoInfo};
@@ -10,9 +14,9 @@ use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
@@ -22,6 +26,8 @@ use tokio::{
 };
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
+use tokio_rustls::{TlsStream, TlsAcceptor};
+use std::io::Cursor;
 
 // A struct to track published messages waiting for acknowledgment
 struct OutgoingMessage {
@@ -46,6 +52,7 @@ pub struct MqttClient {
     outgoing_messages: Arc<Mutex<HashMap<u16, OutgoingMessage>>>,
     message_timeout: Duration,
     max_retries: u8,
+    options: Arc<Options>,
 }
 
 struct Connection {
@@ -54,8 +61,53 @@ struct Connection {
     codec: Arc<MqttCodec>,
 }
 
+// 创建一个简单的内存流来模拟 TLS 连接
+struct MemoryStream {
+    read_buf: Cursor<Vec<u8>>,
+    write_buf: Vec<u8>,
+}
+
+impl AsyncRead for MemoryStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let this = self.get_mut();
+        let n = std::io::Read::read(&mut this.read_buf, buf.initialize_unfilled())?;
+        buf.advance(n);
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl AsyncWrite for MemoryStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        let this = self.get_mut();
+        this.write_buf.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 impl MqttClient {
-    pub fn new(client_id: String, host: String, port: u16) -> Self {
+    pub fn new(client_id: String, host: String, port: u16, options: Arc<Options>) -> Self {
         Self {
             client_id,
             host,
@@ -69,6 +121,7 @@ impl MqttClient {
             outgoing_messages: Arc::new(Mutex::new(HashMap::new())),
             message_timeout: Duration::from_secs(30),
             max_retries: 3,
+            options,
         }
     }
 
@@ -123,9 +176,6 @@ impl MqttClient {
             codec: Arc::new(MqttCodec::new()),
         };
 
-        // Clone tx_to_broker before moving connection
-        let tx_to_broker = tx_to_broker.clone();
-
         // Store connection
         self.connection = Some(connection);
 
@@ -142,10 +192,11 @@ impl MqttClient {
         framed.send(connect_message).await?;
 
         // Spawn task to handle messages from/to broker
-        let client_id = self.client_id.clone();
-        let packet_id = self.packet_id.clone();
         let outgoing_messages = self.outgoing_messages.clone();
-
+        let packet_id = self.packet_id.clone();
+        let options = self.options.clone();
+        let client_id = self.client_id.clone();
+        let mut framed = framed;
         tokio::spawn(async move {
             let mut ping_interval = time::interval(Duration::from_secs(30));
 
@@ -231,35 +282,64 @@ impl MqttClient {
 
                                     // 将 ServerPublishMessage 转换为 TrafficRecord
                                     let topic = publish.topic.clone();
-
-                                    // 序列化完整的 publish 对象
                                     let publish_bytes = publish.encode().freeze().to_vec();
 
                                     // 创建 TrafficRecord
-                                    // FIX ME 需要修改
                                     let record = crate::model::TrafficRecord::new_tcp(
-                                        &topic, // service_name 使用 topic
-                                        publish_bytes, // request_data 使用完整的 publish 对象
-                                        vec![] // response_data 为空
+                                        &topic,
+                                        publish_bytes,
+                                        vec![]
                                     );
 
-                                    // 尝试获取回放服务
-                                    let playback_service = PLAYBACK_SERVICE.lock().await;
-                                    if let Some(playback_service) = playback_service.as_ref() {
-                                        // 1. 先存储到 Redis
-                                        if let Err(err) = playback_service.add_record(record.clone()).await {
-                                            error!("Failed to store MQTT message to Redis: {}", err);
-                                        } else {
-                                            debug!("Stored MQTT message from topic '{}' to Redis", topic);
-                                        }
+                                    match options.mode {
+                                        ProxyMode::Record => {
+                                            // 1. 先存储到 Redis
+                                            let playback_service = PLAYBACK_SERVICE.lock().await;
+                                            if let Some(playback_service) = playback_service.as_ref() {
+                                                if let Err(err) = playback_service.add_record(record.clone()).await {
+                                                    error!("Failed to store MQTT message to Redis: {}", err);
+                                                } else {
+                                                    debug!("Stored MQTT message from topic '{}' to Redis", topic);
+                                                }
 
-                                        // 2. 然后触发本地回放
-                                        playback_service.trigger_replay(&record).await;
-                                        debug!("Triggered local replay for MQTT message from topic '{}'", topic);
-                                    } else {
-                                        error!("Playback service not initialized");
-                                        continue;
-                                    };
+                                                // 2. 然后触发本地回放
+                                                playback_service.trigger_replay(&record).await;
+                                                debug!("Triggered local replay for MQTT message from topic '{}'", topic);
+                                            } else {
+                                                error!("Playback service not initialized");
+                                            }
+                                        }
+                                        ProxyMode::Playback => {
+                                            // 创建内存流
+                                            let stream = MemoryStream {
+                                                read_buf: Cursor::new(record.request.body.clone()),
+                                                write_buf: Vec::new(),
+                                            };
+
+                                            // 创建 TLS 流
+                                            if let Some(tls) = &options.tcp.tls {
+                                                let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                                let acceptor = TlsAcceptor::from(tls_config);
+                                                
+                                                // 直接调用 handle_tls_proxy
+                                                let options = options.clone();
+                                                tokio::spawn(async move {
+                                                    match acceptor.accept(stream).await {
+                                                        Ok(tls_stream) => {
+                                                            if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("Failed to establish TLS connection: {:?}", e);
+                                                        }
+                                                    }
+                                                });
+                                            } else {
+                                                error!("TLS configuration not found");
+                                            }
+                                        }
+                                    }
 
                                     // Forward to user
                                     if let Err(err) = tx_from_broker.send(Ok(message)).await {
@@ -284,37 +364,65 @@ impl MqttClient {
 
                                     // 将 QueryMessage 转换为 TrafficRecord
                                     let topic = query.topic.clone();
-
-                                    // 保存原始消息的 QoS 级别
                                     let original_qos = message.header.qos;
-
-                                    // 序列化完整的 query 对象
                                     let query_bytes = query.encode().freeze().to_vec();
 
                                     // 创建 TrafficRecord
                                     let record = crate::model::TrafficRecord::new_tcp(
-                                        &topic, // service_name 使用 topic
-                                        query_bytes, // request_data 使用完整的 query 对象
-                                        vec![] // response_data 为空
+                                        &topic,
+                                        query_bytes,
+                                        vec![]
                                     );
 
-                                    // 尝试获取回放服务
-                                    let playback_service = PLAYBACK_SERVICE.lock().await;
-                                    if let Some(playback_service) = playback_service.as_ref() {
-                                        // 1. 先存储到 Redis
-                                        if let Err(err) = playback_service.add_record(record.clone()).await {
-                                            error!("Failed to store Query message to Redis: {}", err);
-                                        } else {
-                                            debug!("Stored Query message from topic '{}' to Redis", topic);
-                                        }
+                                    match options.mode {
+                                        ProxyMode::Record => {
+                                            // 1. 先存储到 Redis
+                                            let playback_service = PLAYBACK_SERVICE.lock().await;
+                                            if let Some(playback_service) = playback_service.as_ref() {
+                                                if let Err(err) = playback_service.add_record(record.clone()).await {
+                                                    error!("Failed to store Query message to Redis: {}", err);
+                                                } else {
+                                                    debug!("Stored Query message from topic '{}' to Redis", topic);
+                                                }
 
-                                        // 2. 然后触发本地回放
-                                        playback_service.trigger_replay(&record).await;
-                                        debug!("Triggered local replay for Query message from topic '{}'", topic);
-                                    } else {
-                                        error!("Playback service not initialized");
-                                        continue;
-                                    };
+                                                // 2. 然后触发本地回放
+                                                playback_service.trigger_replay(&record).await;
+                                                debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                            } else {
+                                                error!("Playback service not initialized");
+                                            }
+                                        }
+                                        ProxyMode::Playback => {
+                                            // 创建内存流
+                                            let stream = MemoryStream {
+                                                read_buf: Cursor::new(record.request.body.clone()),
+                                                write_buf: Vec::new(),
+                                            };
+
+                                            // 创建 TLS 流
+                                            if let Some(tls) = &options.tcp.tls {
+                                                let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                                let acceptor = TlsAcceptor::from(tls_config);
+                                                
+                                                // 直接调用 handle_tls_proxy
+                                                let options = options.clone();
+                                                tokio::spawn(async move {
+                                                    match acceptor.accept(stream).await {
+                                                        Ok(tls_stream) => {
+                                                            if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("Failed to establish TLS connection: {:?}", e);
+                                                        }
+                                                    }
+                                                });
+                                            } else {
+                                                error!("TLS configuration not found");
+                                            }
+                                        }
+                                    }
 
                                     // 回复 QueryAck
                                     if let Some(packet_id) = query.packet_id {
@@ -323,7 +431,7 @@ impl MqttClient {
                                         let ack_header = Header {
                                             message_type: MessageType::QueryAck,
                                             dup: false,
-                                            qos: original_qos, // 使用原始消息的 QoS 级别
+                                            qos: original_qos,
                                             retain: false,
                                         };
 
@@ -372,6 +480,7 @@ impl MqttClient {
                                     debug!("Removed outgoing message with ID: {} after receiving QueryCon", con.message_id);
                                 }
                             }
+                            
                             MessageType::Pong => {
                                 // Pong received, do nothing
                                 debug!("Received pong from broker");

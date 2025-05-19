@@ -5,6 +5,8 @@ use qproxy::mqtt_client::{
 use bytes::Bytes;
 use std::time::Duration;
 use tokio::time::sleep;
+use qproxy::options::Options;
+use std::sync::Arc;
 
 // 这是一个集成测试，需要连接到真实的 MQTT 代理
 // 默认情况下会被跳过，除非明确指定环境变量 MQTT_BROKER_HOST
@@ -27,7 +29,8 @@ async fn test_mqtt_connect_publish() {
     
     // 创建 MQTT 客户端
     let client_id = format!("test_client_{}", uuid::Uuid::new_v4());
-    let mut client = MqttClient::new(client_id, broker_host, broker_port);
+    let options = Arc::new(Options::default());
+    let mut client = MqttClient::new(client_id, broker_host, broker_port, options);
     
     // 可选：设置凭据
     if let (Ok(username), Ok(password)) = (std::env::var("MQTT_USERNAME"), std::env::var("MQTT_PASSWORD")) {

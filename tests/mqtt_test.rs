@@ -7,6 +7,9 @@ use qproxy::mqtt_client::{
 };
 use bytes::{Bytes, BytesMut};
 use std::time::Duration;
+use qproxy::options::Options;
+use std::sync::Arc;
+use tokio::time::sleep;
 
 #[tokio::test]
 async fn test_mqtt_message_construction() {
@@ -45,14 +48,13 @@ async fn test_mqtt_message_construction() {
 #[tokio::test]
 async fn test_mqtt_client_initialization() {
     let client_id = format!("test_client_{}", uuid::Uuid::new_v4());
-    let mut client = MqttClient::new(client_id, "localhost".to_string(), 1883);
-    
+    let options = Arc::new(Options::default());
+    let mut client = MqttClient::new(client_id, "localhost".to_string(), 1883, options);
     client.set_credentials("test_user".to_string(), "test_password".to_string());
     client.set_keep_alive(120);
     client.set_clean_session(true);
     client.set_message_timeout(Duration::from_secs(60));
     client.set_max_retries(5);
-    
     // Since we're not actually connecting to a broker, we just verify the client was initialized
     // with the correct settings
     // No assertions needed - we just make sure the code runs without panicking

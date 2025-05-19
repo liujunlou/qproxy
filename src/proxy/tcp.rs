@@ -5,6 +5,7 @@ use tokio::{
 };
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
     errors::Error, get_shutdown_rx, load_tls, model::TrafficRecord, options::{Options, ProxyMode}, PLAYBACK_SERVICE
@@ -34,7 +35,7 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
                             tokio::spawn(async move {
                                 if let Ok(upstream) = acceptor.accept(stream).await {
                                     // 透传请求流量
-                                    match handle_tls_proxy(upstream, options).await {
+                                    match handle_tls_proxy(tokio_rustls::TlsStream::Server(upstream), options).await {
                                         Ok(_) => {}
                                         Err(e) => {
                                             error!("Failed to handle TCP proxy: {:?}", e);
@@ -69,7 +70,10 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     Ok(())
 }
 
-async fn handle_tls_proxy(inbound: TlsStream<TcpStream>, options: Arc<Options>) -> Result<(), Error> {
+pub async fn handle_tls_proxy<S>(inbound: tokio_rustls::TlsStream<S>, options: Arc<Options>) -> Result<(), Error>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
     let (mut ri, mut wi) = tokio::io::split(inbound);
     let mut buffer = [0u8; 8192];
     // 判断是录制的流量还是回放的流量
