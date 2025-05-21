@@ -12,7 +12,7 @@ pub struct Options {
     pub http: HttpOptions,
     // tcp代理节点
     pub tcp: TcpOptions,
-    // 流量回放服务节点
+    // 流量回放目标服务节点
     pub peer: Option<PeerOptions>,
     // 服务发现
     pub service_discovery: ServiceDiscoveryOptions,

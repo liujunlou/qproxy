@@ -92,7 +92,7 @@ pub async fn start_qproxy(options: &Options) -> Result<Vec<JoinHandle<()>>, Erro
     // 创建同步服务
     let mut sync_handle = None;
     if options.sync.clone().enabled {
-        let sync_service = sync::SyncService::new((*options).clone())?;
+        let sync_service = sync::SyncService::new(&options)?;
         sync_handle = Some(sync_service.start().await);
     }
 

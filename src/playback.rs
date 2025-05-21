@@ -1,4 +1,4 @@
-use crate::{errors::Error, model::{Protocol, TrafficRecord}, service_discovery::SERVICE_REGISTRY};
+use crate::{errors::Error, get_shutdown_rx, model::{Protocol, TrafficRecord}, service_discovery::SERVICE_REGISTRY};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
@@ -6,11 +6,13 @@ use hyper::body::Body;
 use hyper_util::{client::legacy::{Builder, Client}, rt::TokioExecutor};
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, sync::RwLock};
 use tokio::net::TcpStream;
 use tracing::{error, info, warn};
+use tokio::sync::mpsc;
+use tokio::sync::Mutex;
 
 const CHECKPOINT_KEY_PREFIX: &str = "qproxy:checkpoint:";
 const SYNC_LOCK_PREFIX: &str = "qproxy:sync_lock:";
@@ -60,20 +62,28 @@ pub enum SyncStatus {
 /// 5. 跟踪同步位点，确保数据完整性
 #[derive(Clone)]
 pub struct PlaybackService {
-    /// 存储流量记录的哈希表，使用 RwLock 保证并发安全
-    // records: Arc<RwLock<HashMap<String, TrafficRecord>>>,
     /// Tokio 执行器，用于异步任务调度
     executor: Arc<TokioExecutor>,
-    /// Redis 连接管理器
+    /// 存储流量记录的哈希表，使用 RwLock 保证并发安全, 用于回放节点本地缓存
+    records: Arc<RwLock<HashMap<String, Vec<TrafficRecord>>>>,
+    /// Redis 连接管理器, 用于录制节点的公共缓存
     redis_pool: Arc<ConnectionManager>,
+    /// 发送新流量通知的通道, 用于触发回放
+    notify_tx: Arc<Mutex<mpsc::Sender<String>>>,
+    /// 接收新流量通知的通道, 用于触发回放
+    notify_rx: Arc<Mutex<mpsc::Receiver<String>>>,
 }
 
 impl PlaybackService {
     /// 使用已有的Redis连接创建服务实例
     pub async fn new(redis_pool: ConnectionManager) -> Result<Self, Error> {
+        let (tx, rx) = mpsc::channel(100);
         Ok(Self {
             executor: Arc::new(TokioExecutor::new()),
+            records: Arc::new(RwLock::new(HashMap::new())),
             redis_pool: Arc::new(redis_pool),
+            notify_tx: Arc::new(Mutex::new(tx)),
+            notify_rx: Arc::new(Mutex::new(rx)),
         })
     }
 
@@ -81,11 +91,13 @@ impl PlaybackService {
     pub async fn new_with_url(redis_url: &str) -> Result<Self, Error> {
         let client = redis::Client::open(redis_url)?;
         let redis_pool = ConnectionManager::new(client).await?;
-
+        let (tx, rx) = mpsc::channel(100);
         Ok(Self {
-            // records: Arc::new(RwLock::new(HashMap::new())),
             executor: Arc::new(TokioExecutor::new()),
+            records: Arc::new(RwLock::new(HashMap::new())),
             redis_pool: Arc::new(redis_pool),
+            notify_tx: Arc::new(Mutex::new(tx)),
+            notify_rx: Arc::new(Mutex::new(rx)),
         })
     }
 
@@ -338,8 +350,11 @@ impl PlaybackService {
         let mut conn = self.redis_pool.as_ref().clone();
         conn.zadd(&key, &json, score).await?;
         
-        // 触发回放
-        self.trigger_replay(&record).await;
+        // 发送新流量通知, 触发回放
+        if let Err(e) = self.notify_tx.lock().await.send(record.peer_id.clone()).await {
+            error!("Failed to send traffic notification: {}", e);
+        }
+        
         Ok(())
     }
 
@@ -348,6 +363,21 @@ impl PlaybackService {
         let key = self.get_traffic_key(peer_id, shard_id);
         let mut conn = self.redis_pool.as_ref().clone();
         conn.del(&key).await?;
+        Ok(())
+    }
+
+    pub async fn add_local_record(&self, record: TrafficRecord) -> Result<(), Error> {
+        let key = self.get_traffic_key(&record.peer_id, "default");
+        self.records.write().await.entry(key).or_insert(Vec::new()).push(record);
+        Ok(())
+    }
+
+    /// 清除本地流量记录
+    pub async fn clear_local_records(&self, record: TrafficRecord) -> Result<(), Error> {
+        let key = self.get_traffic_key(&record.peer_id, "default");
+        if let Some(records) = self.records.write().await.get_mut(&key) {
+            records.retain(|r| r.id != record.id);
+        }
         Ok(())
     }
 
@@ -619,61 +649,10 @@ impl PlaybackService {
     /// 同步来自peer的记录
     /// 
     /// # 参数
-    /// * `peer_id` - 对等节点标识
-    /// * `shard_id` - 分片标识
-    /// * `records` - 要同步的记录列表
-    pub async fn sync_from_peer(&self, peer_id: &str, shard_id: &str, records: Vec<TrafficRecord>) -> Result<(), Error> {
-        if records.is_empty() {
-            return Ok(());
-        }
-
-        // 开始同步
-        if !self.start_sync(peer_id, shard_id).await? {
-            warn!("Failed to acquire sync lock for peer: {}, shard: {}", peer_id, shard_id);
-            return Ok(());
-        }
-
-        let result = async {
-            // 按时间戳排序
-            let mut sorted_records = records;
-            sorted_records.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-
-            // 获取最后一条记录的信息
-            let last_record = sorted_records.last().unwrap();
-            let last_sync_time = last_record.timestamp;
-
-            // 添加所有记录
-            for record in sorted_records.clone() {
-                self.add_record(record.clone()).await?;
-            }
-
-            // 更新checkpoint
-            let checkpoint = CheckpointInfo {
-                peer_id: peer_id.to_string(),
-                shard_id: shard_id.to_string(),
-                last_sync_time,
-                last_record_id: last_record.id.clone(),
-                status: SyncStatus::Completed,
-                retry_count: 0,
-                error_message: None,
-            };
-            self.update_checkpoint(&checkpoint).await?;
-
-            Ok::<(), Error>(())
-        }.await;
-
-        match result {
-            Ok(()) => {
-                self.complete_sync(peer_id, shard_id, true, None).await?;
-                info!("Successfully synced records from peer: {}, shard: {}", peer_id, shard_id);
-            }
-            Err(e) => {
-                self.complete_sync(peer_id, shard_id, false, Some(e.to_string())).await?;
-                error!("Failed to sync records from peer: {}, shard: {}, error: {}", peer_id, shard_id, e);
-            }
-        }
-
-        Ok(())
+    /// * `record` - 要同步的记录
+    pub async fn sync_from_peer(&self, record: TrafficRecord) -> Result<Vec<u8>, Error> {
+        let responses = self.trigger_replay(&record).await?;
+        Ok(responses)
     }
 
     /// 获取所有同步位点信息
@@ -700,7 +679,7 @@ impl PlaybackService {
     /// 1. HTTP/TCP 录制流量
     /// 2. 从 peer 同步的流量
     /// 3. 轮询获取的新流量
-    pub async fn trigger_replay(&self, record: &TrafficRecord) {
+    pub async fn trigger_replay(&self, record: &TrafficRecord) -> Result<Vec<u8>, Error> {
         if let Some(service_name) = record.request.service_name.as_ref() {
             match SERVICE_REGISTRY.read().await.find_local_service(service_name).await {
                 Ok(Some(service)) => {
@@ -710,13 +689,19 @@ impl PlaybackService {
 
                     match record.protocol {
                         Protocol::TCP => {
-                            // TODO 这里完成 MQTT connect和流量回放
+                            // TODO 这里完成 MQTT connect和流量回放，复用连接
                             if let Ok(mut stream) = TcpStream::connect(&addr).await {
                                 if let Err(e) = stream.write_all(&record.request.body).await {
                                     warn!("Failed to replay TCP traffic: {}", e);
+                                    return Err(Error::ServiceError("Failed to replay TCP traffic".to_string()));
                                 } else {
                                     info!("Successfully replayed TCP traffic to {}", addr);
+                                    // TODO 这里需要返回响应数据
+                                    return Ok(vec![]);
                                 }
+                            } else {
+                                warn!("Failed to connect to {}", addr);
+                                return Err(Error::ServiceError("Failed to connect to".to_string()));
                             }
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
@@ -743,23 +728,109 @@ impl PlaybackService {
                                 local_req
                             };
 
-                            if let Ok(request) = local_req.body(Full::new(Bytes::from(record.request.body.clone()))) {
-                                let client = Builder::new((*self.executor).clone())
-                                    .pool_idle_timeout(std::time::Duration::from_secs(30))
-                                    .build_http();
+                            let request = local_req.body(Full::new(Bytes::from(record.request.body.clone())))
+                                .map_err(|_| {
+                                    warn!("Has no body for HTTP request {}", local_url);
+                                    Error::Http1("Has no body".to_string())
+                                })?;
 
-                                match client.request(request).await {
-                                    Ok(_) => info!("Successfully replayed HTTP traffic to {}", local_url),
-                                    Err(e) => warn!("Failed to replay HTTP traffic: {}", e),
+                            let client = Builder::new((*self.executor).clone())
+                                .pool_idle_timeout(std::time::Duration::from_secs(30))
+                                .build_http();
+
+                            match client.request(request).await {
+                                Ok(resp) => {
+                                    info!("Successfully replayed HTTP traffic to {}", local_url);
+                                    return Ok(resp.into_body().collect().await?.to_bytes().to_vec());
+                                }
+                                Err(e) => {
+                                    warn!("Failed to replay HTTP traffic: {}", e);
+                                    return Err(Error::Http1(e.to_string()));
                                 }
                             }
                         }
                     }
                 }
-                Ok(None) => warn!("No local service found for {}", service_name),
-                Err(e) => warn!("Error finding local service: {}", e),
+                Ok(None) => {
+                    warn!("No local service found for {}", service_name);
+                    return Err(Error::ServiceDiscovery("No local service found".to_string()));
+                }
+                Err(e) => {
+                    warn!("Error finding local service: {}", e);
+                    return Err(Error::ServiceDiscovery(e.to_string()));
+                }
+            }
+        } else {
+            warn!("No service name found for traffic record");
+            return Err(Error::Config("No service name found".to_string()));
+        }
+    }
+
+    /// 启动流量回放服务
+    pub async fn auto_playback(&self) {
+        let mut backoff = Duration::from_secs(1);
+        let max_backoff = Duration::from_secs(60);
+        let mut notify_rx = self.notify_rx.lock().await;
+    
+        loop {
+            if get_shutdown_rx().await.try_recv().is_ok() {
+                info!("Sync service received shutdown signal");
+                return;
+            }
+            tokio::select! {
+                // 处理新流量通知
+                Some(peer_id) = notify_rx.recv() => {
+                    info!("Received new traffic notification for peer: {}", peer_id);
+                    if let Err(e) = self.replay_pending_traffic(&peer_id, "default").await {
+                        error!("Failed to replay traffic for peer {}: {}", peer_id, e);
+                    }
+                    // 重置回退时间
+                    backoff = Duration::from_secs(1);
+                }
+                // 轮询检查待回放流量
+                _ = tokio::time::sleep(backoff) => {
+                    info!("Polling for pending traffic with backoff: {:?}", backoff);
+                    if let Err(e) = self.replay_pending_traffic("default", "default").await {
+                        error!("Failed to replay traffic during polling: {}", e);
+                    }
+                    // 指数回退，但不超过最大回退时间
+                    backoff = std::cmp::min(backoff * 2, max_backoff);
+                }
             }
         }
+    }
+
+    /// 回放待处理的流量
+    async fn replay_pending_traffic(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
+        let key = self.get_traffic_key(peer_id, shard_id);
+        
+        // 1. 先获取所有需要回放的记录
+        let records_to_replay = {
+            let records_guard = self.records.read().await;
+            records_guard.get(&key)
+                .map(|records| records.clone())
+                .unwrap_or_default()
+        };
+        
+        // 2. 回放流量
+        let mut failed_records = Vec::new();
+        for record in &records_to_replay {
+            info!("Replaying traffic record: {}", record.id);
+            if let Err(e) = self.trigger_replay(record).await {
+                error!("Failed to replay traffic record: {}", e);
+                failed_records.push(record.id.clone());
+            }
+        }
+        
+        // 3. 清理已成功回放的记录
+        if !records_to_replay.is_empty() {
+            let mut records_guard = self.records.write().await;
+            if let Some(records) = records_guard.get_mut(&key) {
+                records.retain(|r| !failed_records.contains(&r.id));
+            }
+        }
+        
+        Ok(())
     }
 }
 

@@ -134,14 +134,15 @@ async fn handle_request(
                 &http::Method::POST => {
                     // 接收并同步记录
                     let body = req.collect().await?.to_bytes();
-                    let records: Vec<TrafficRecord> = serde_json::from_slice(&body)
+                    let record: TrafficRecord = serde_json::from_slice(&body)
                         .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
                     
-                    playback_service.sync_from_peer("default", "default", records).await?;
+                    // 返回透传的真实响应数据
+                    let response = playback_service.sync_from_peer(record.clone()).await?;
                     
                     return Ok(Response::builder()
                         .status(http::StatusCode::OK)
-                        .body(Full::new(Bytes::from("Sync completed")))
+                        .body(Full::new(Bytes::from(response.clone())))
                         .unwrap());
                 }
                 _ => {
