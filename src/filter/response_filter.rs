@@ -1,6 +1,8 @@
 use std::sync::{Arc, RwLock};
+use tokio_util::codec::{Decoder, Encoder};
+use bytes::{Bytes, BytesMut};
 
-use crate::{errors::Error, model::{Protocol, TrafficRecord}, mqtt_client::{codec::MqttCodec, message::{Message, MessageType, PublishMessage, QueryMessage}}};
+use crate::{errors::Error, model::{Protocol, TrafficRecord}, mqtt_client::codec::{MqttCodec, Message, MessageType, PublishMessage, QueryMessage, MqttMessage}};
 
 use super::Filter;
 
@@ -13,7 +15,7 @@ pub struct ResponseFilter {
 impl ResponseFilter {
     pub fn new(fields: Option<Vec<String>>) -> Self {
         Self {
-            mqtt_codec: Arc::new(RwLock::new(MqttCodec::new())),
+            mqtt_codec: Arc::new(RwLock::new(MqttCodec::new(1024 * 1024))),
             fields,
         }
     }
@@ -29,17 +31,20 @@ impl Filter for ResponseFilter {
         let mut filtered = record.clone();
         // 在TCP的情况下，解析拉取的body为具体的消息对象，并过滤其中的字段
         if record.protocol == Protocol::TCP {
+            // 将 Vec<u8> 转换为 BytesMut
+            let mut buf = BytesMut::from(&filtered.response.body[..]);
+            
             // 解析拉取的body为具体的消息对象
             let msg = self.mqtt_codec.write()
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?
-                .decode_bytes(&filtered.response.body)
-                .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
+                .decode_eof(&mut buf)
+                .map_err(|e| Error::MqttDecodeError(e.to_string()))?
+                .ok_or_else(|| Error::MqttDecodeError("Failed to decode message".to_string()))?;
             
             // 根据消息类型处理
-            let updated_payload = match msg.header.message_type {
-                MessageType::Publish => {
-                    let mut publish_message = PublishMessage::decode(&msg.payload)
-                        .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
+            let updated_msg = match msg {
+                MqttMessage::Publish(publish_msg) => {
+                    let mut publish_message = publish_msg;
                     if let Some(fields) = &self.fields {
                         for field in fields {
                             if PublishMessage::field_names().contains(&field.as_str()) {
@@ -47,11 +52,10 @@ impl Filter for ResponseFilter {
                             }
                         }
                     }
-                    publish_message.encode().freeze()
+                    MqttMessage::Publish(publish_message)
                 }
-                MessageType::Query => {
-                    let mut query_message = QueryMessage::decode(&msg.payload)
-                        .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
+                MqttMessage::Query(query_msg) => {
+                    let mut query_message = query_msg;
                     if let Some(fields) = &self.fields {
                         for field in fields {
                             if QueryMessage::field_names().contains(&field.as_str()) {
@@ -59,14 +63,18 @@ impl Filter for ResponseFilter {
                             }
                         }
                     }
-                    query_message.encode().freeze()
+                    MqttMessage::Query(query_message)
                 }
-                _ => msg.payload.clone(),
+                _ => msg,
             };
 
-            // 创建新的消息并更新 body
-            let updated_msg = Message::new(msg.header, updated_payload);
-            filtered.response.body = updated_msg.encode().to_vec();
+            // 更新 body
+            let mut buf = BytesMut::new();
+            self.mqtt_codec.write()
+                .map_err(|e| Error::MqttDecodeError(e.to_string()))?
+                .encode(updated_msg, &mut buf)
+                .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
+            filtered.response.body = buf.to_vec();
         }
         
         Ok(filtered)

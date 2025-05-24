@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{errors::Error, mqtt_client::message::MessageType};
+use crate::{errors::Error, mqtt_client::codec::MessageType};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TrafficRecord {

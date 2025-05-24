@@ -1,7 +1,5 @@
-use qproxy::mqtt_client::{
-    message::{QoS, Message},
-    client::MqttClient
-};
+use qproxy::mqtt_client::codec::QoS;
+use qproxy::mqtt_client::client::MqttClient;
 use bytes::Bytes;
 use std::time::Duration;
 use tokio::time::sleep;

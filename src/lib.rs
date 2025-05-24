@@ -20,10 +20,8 @@ pub mod record;
 pub mod service_discovery;
 pub mod sync;
 pub mod mqtt_client {
-    pub mod message;
     pub mod client;
     pub mod codec;
-    pub mod crypto;
 }
 pub mod monitor;
 

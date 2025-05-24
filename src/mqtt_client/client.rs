@@ -4,12 +4,7 @@ use crate::{
     proxy::tcp::handle_tls_proxy,
 };
 
-use super::codec::MqttCodec;
-use super::crypto::{self, CryptoInfo};
-use super::message::{
-    ConnAckMessage, ConnectMessage, DisconnectMessage, Header, Message, MessageType, PingMessage,
-    PubAckMessage, PublishMessage, QoS, QueryAckMessage, QueryConMessage, QueryMessage, ServerPublishMessage,
-};
+use super::codec::{MqttCodec, MqttMessage, QoS, QueryMessage};
 use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -56,8 +51,8 @@ pub struct MqttClient {
 }
 
 struct Connection {
-    tx_to_broker: mpsc::Sender<Message>,
-    rx_from_broker: Option<mpsc::Receiver<Result<Message>>>,
+    tx_to_broker: mpsc::Sender<MqttMessage>,
+    rx_from_broker: Option<mpsc::Receiver<Result<MqttMessage>>>,
     codec: Arc<MqttCodec>,
 }
 
@@ -150,17 +145,25 @@ impl MqttClient {
         let socket = TcpStream::connect(format!("{}:{}", self.host, self.port)).await?;
 
         // Create a new connect message
-        let mut connect = ConnectMessage::new();
-        connect.client_id = self.client_id.clone();
-        connect.keep_alive = self.keep_alive;
-
-        if let (Some(username), Some(password)) = (&self.username, &self.password) {
-            connect.app_id = Some(username.clone());
-            connect.token = Some(password.clone());
-        }
+        let connect = MqttMessage::Connect(super::codec::ConnectMessage {
+            device_id: self.client_id.clone(),
+            clean_session: self.clean_session,
+            keep_alive: self.keep_alive as u32,
+            credentials: if let (Some(username), Some(password)) = (&self.username, &self.password) {
+                Some(super::codec::Credentials {
+                    app_key: username.clone(),
+                    token: Some(password.clone()),
+                })
+            } else {
+                None
+            },
+            will: None,
+            protocol_version: 3,
+            protocol_name: "RCloud".to_string(),
+        });
 
         // Create a new codec
-        let codec = MqttCodec::new();
+        let codec = MqttCodec::new(1024 * 1024); // 1MB max frame length
 
         // Create framed connection
         let mut framed = Framed::new(socket, codec);
@@ -173,23 +176,14 @@ impl MqttClient {
         let connection = Connection {
             tx_to_broker: tx_to_broker.clone(),
             rx_from_broker: Some(rx_from_broker),
-            codec: Arc::new(MqttCodec::new()),
+            codec: Arc::new(MqttCodec::new(1024 * 1024)),
         };
 
         // Store connection
         self.connection = Some(connection);
 
         // Send connect message
-        let header = Header {
-            message_type: MessageType::Connect,
-            dup: false,
-            qos: QoS::AtMostOnce,
-            retain: false,
-        };
-
-        let connect_message = Message::new(header, connect.encode().freeze());
-
-        framed.send(connect_message).await?;
+        framed.send(connect).await?;
 
         // Spawn task to handle messages from/to broker
         let outgoing_messages = self.outgoing_messages.clone();
@@ -201,9 +195,6 @@ impl MqttClient {
             let mut ping_interval = time::interval(Duration::from_secs(30));
 
             loop {
-                // Use futures::FutureExt::select to handle futures in sequence instead of tokio::select!
-
-                // 1. Check for ping timer
                 let ping_timer = ping_interval.tick().fuse();
                 let broker_message = rx_to_broker.recv().fuse();
 
@@ -211,283 +202,241 @@ impl MqttClient {
                 futures::pin_mut!(broker_message);
 
                 match futures::future::select(ping_timer, broker_message).await {
-                    // Ping timer fired
                     futures::future::Either::Left((_, _)) => {
                         // Send ping
-                        let header = Header {
-                            message_type: MessageType::Ping,
-                            dup: false,
-                            qos: QoS::AtMostOnce,
-                            retain: false,
-                        };
+                        let ping = MqttMessage::PingReq(super::codec::PingReqMessage {
+                            properties: None,
+                        });
 
-                        let ping = PingMessage;
-                        let message = Message::new(header, ping.encode().freeze());
-
-                        if let Err(err) = framed.send(message).await {
+                        if let Err(err) = framed.send(ping).await {
                             error!("Failed to send ping: {}", err);
                             break;
                         }
                     },
-                    // Message from broker channel
                     futures::future::Either::Right((Some(message), _)) => {
                         if let Err(err) = framed.send(message).await {
                             error!("Failed to send message: {}", err);
                             break;
                         }
                     },
-                    // Channel closed
                     futures::future::Either::Right((None, _)) => {
                         break;
                     }
                 }
 
-                // Now check for incoming network messages
                 match framed.next().await {
                     Some(Ok(message)) => {
-                        match message.header.message_type {
-                            MessageType::ConnAck => {
-                                // Handle connection acknowledgment
-                                if let Ok(connack) = ConnAckMessage::decode(&message.payload) {
-                                    if connack.status == 0 {
-                                        debug!("Connected to broker");
-                                    } else {
-                                        error!("Connection refused: status={}", connack.status);
-                                        break;
-                                    }
+                        match message {
+                            MqttMessage::ConnAck(connack) => {
+                                if connack.status == 0 {
+                                    debug!("Connected to broker");
+                                } else {
+                                    error!("Connection refused: status={}", connack.status);
+                                    break;
                                 }
                             }
-                            MessageType::Publish => {
+                            MqttMessage::Publish(ref publish) => {
                                 // Handle incoming publish
-                                if let Ok(publish) = ServerPublishMessage::decode(&message.payload) {
-                                    // FIX ME 对 QoS 1 和 QoS 2 都回复 PubAckMessage
-                                    if message.header.qos == QoS::AtLeastOnce || message.header.qos == QoS::ExactlyOnce {
-                                        if let Some(packet_id) = publish.packet_id {
-                                            let puback: PubAckMessage = PubAckMessage::new(packet_id, 0);
+                                if publish.qos != QoS::AtMostOnce {
+                                    if let Some(packet_id) = publish.message_id {
+                                        let puback = MqttMessage::PubAck(super::codec::PubAckMessage {
+                                            message_id: packet_id,
+                                            reason_code: Some(0),
+                                            properties: None,
+                                        });
 
-                                            let ack_header = Header {
-                                                message_type: MessageType::PubAck,
-                                                dup: false,
-                                                qos: QoS::AtMostOnce,
-                                                retain: false,
-                                            };
-
-                                            let ack_message = Message::new(ack_header, puback.encode().freeze());
-
-                                            if let Err(err) = framed.send(ack_message).await {
-                                                error!("Failed to send PUBACK: {}", err);
-                                            }
+                                        if let Err(err) = framed.send(puback).await {
+                                            error!("Failed to send PUBACK: {}", err);
                                         }
-                                    }
-
-                                    // 将 ServerPublishMessage 转换为 TrafficRecord
-                                    let topic = publish.topic.clone();
-                                    let publish_bytes = publish.encode().freeze().to_vec();
-
-                                    // 创建 TrafficRecord
-                                    let record = crate::model::TrafficRecord::new_tcp(
-                                        &topic,
-                                        publish_bytes,
-                                        vec![]
-                                    );
-
-                                    match options.mode {
-                                        ProxyMode::Record => {
-                                            // 1. 先存储到 Redis
-                                            let playback_service = PLAYBACK_SERVICE.lock().await;
-                                            if let Some(playback_service) = playback_service.as_ref() {
-                                                if let Err(err) = playback_service.add_record(record.clone()).await {
-                                                    error!("Failed to store MQTT message to Redis: {}", err);
-                                                } else {
-                                                    debug!("Stored MQTT message from topic '{}' to Redis", topic);
-                                                }
-
-                                                // 2. 然后触发本地回放
-                                                playback_service.trigger_replay(&record).await;
-                                                debug!("Triggered local replay for MQTT message from topic '{}'", topic);
-                                            } else {
-                                                error!("Playback service not initialized");
-                                            }
-                                        }
-                                        ProxyMode::Playback => {
-                                            // 创建内存流
-                                            let stream = MemoryStream {
-                                                read_buf: Cursor::new(record.request.body.clone()),
-                                                write_buf: Vec::new(),
-                                            };
-
-                                            // 创建 TLS 流
-                                            if let Some(tls) = &options.tcp.tls {
-                                                let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
-                                                let acceptor = TlsAcceptor::from(tls_config);
-                                                
-                                                // 直接调用 handle_tls_proxy
-                                                let options = options.clone();
-                                                tokio::spawn(async move {
-                                                    match acceptor.accept(stream).await {
-                                                        Ok(tls_stream) => {
-                                                            if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
-                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            error!("Failed to establish TLS connection: {:?}", e);
-                                                        }
-                                                    }
-                                                });
-                                            } else {
-                                                error!("TLS configuration not found");
-                                            }
-                                        }
-                                    }
-
-                                    // Forward to user
-                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
-                                        error!("Failed to forward message: {}", err);
                                     }
                                 }
-                            }
-                            MessageType::PubAck => {
-                                // Handle publish acknowledgment
-                                if let Ok(ack) = PubAckMessage::decode(&message.payload) {
-                                    debug!("Received PUBACK for message ID: {}", ack.message_id);
 
-                                    // Remove the acknowledged message from the outgoing messages
-                                    outgoing_messages.lock().unwrap().remove(&ack.message_id);
-                                }
-                            }
-                            MessageType::Query => {
-                                // Handle incoming query
-                                if let Ok(query) = QueryMessage::decode(&message.payload) {
-                                    debug!("Received Query for topic: {} with target_id: {:?}",
-                                           query.topic, query.target_id);
+                                // Convert to TrafficRecord
+                                let topic = publish.topic.clone();
+                                let publish_bytes = serde_json::to_vec(&publish).unwrap_or_default();
 
-                                    // 将 QueryMessage 转换为 TrafficRecord
-                                    let topic = query.topic.clone();
-                                    let original_qos = message.header.qos;
-                                    let query_bytes = query.encode().freeze().to_vec();
+                                let record = crate::model::TrafficRecord::new_tcp(
+                                    &topic,
+                                    publish_bytes,
+                                    vec![]
+                                );
 
-                                    // 创建 TrafficRecord
-                                    let record = crate::model::TrafficRecord::new_tcp(
-                                        &topic,
-                                        query_bytes,
-                                        vec![]
-                                    );
-
-                                    match options.mode {
-                                        ProxyMode::Record => {
-                                            // 1. 先存储到 Redis
-                                            let playback_service = PLAYBACK_SERVICE.lock().await;
-                                            if let Some(playback_service) = playback_service.as_ref() {
-                                                if let Err(err) = playback_service.add_record(record.clone()).await {
-                                                    error!("Failed to store Query message to Redis: {}", err);
-                                                } else {
-                                                    debug!("Stored Query message from topic '{}' to Redis", topic);
-                                                }
-
-                                                // 2. 然后触发本地回放
-                                                playback_service.trigger_replay(&record).await;
-                                                debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                match options.mode {
+                                    ProxyMode::Record => {
+                                        // 1. 先存储到 Redis
+                                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                                        if let Some(playback_service) = playback_service.as_ref() {
+                                            if let Err(err) = playback_service.add_record(record.clone()).await {
+                                                error!("Failed to store MQTT message to Redis: {}", err);
                                             } else {
-                                                error!("Playback service not initialized");
+                                                debug!("Stored MQTT message from topic '{}' to Redis", topic);
                                             }
-                                        }
-                                        ProxyMode::Playback => {
-                                            // 创建内存流
-                                            let stream = MemoryStream {
-                                                read_buf: Cursor::new(record.request.body.clone()),
-                                                write_buf: Vec::new(),
-                                            };
 
-                                            // 创建 TLS 流
-                                            if let Some(tls) = &options.tcp.tls {
-                                                let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
-                                                let acceptor = TlsAcceptor::from(tls_config);
-                                                
-                                                // 直接调用 handle_tls_proxy
-                                                let options = options.clone();
-                                                tokio::spawn(async move {
-                                                    match acceptor.accept(stream).await {
-                                                        Ok(tls_stream) => {
-                                                            if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
-                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
-                                                            }
-                                                        }
-                                                        Err(e) => {
-                                                            error!("Failed to establish TLS connection: {:?}", e);
-                                                        }
-                                                    }
-                                                });
-                                            } else {
-                                                error!("TLS configuration not found");
-                                            }
+                                            // 2. 然后触发本地回放
+                                            playback_service.trigger_replay(&record).await;
+                                            debug!("Triggered local replay for MQTT message from topic '{}'", topic);
+                                        } else {
+                                            error!("Playback service not initialized");
                                         }
                                     }
-
-                                    // 回复 QueryAck
-                                    if let Some(packet_id) = query.packet_id {
-                                        let query_ack = QueryAckMessage::new(packet_id, 0, Some(query.payload.clone()));
-
-                                        let ack_header = Header {
-                                            message_type: MessageType::QueryAck,
-                                            dup: false,
-                                            qos: original_qos,
-                                            retain: false,
+                                    ProxyMode::Playback => {
+                                        // 创建内存流
+                                        let stream = MemoryStream {
+                                            read_buf: Cursor::new(record.request.body.clone()),
+                                            write_buf: Vec::new(),
                                         };
 
-                                        let ack_message = Message::new(ack_header, query_ack.encode().freeze());
-
-                                        if let Err(err) = framed.send(ack_message).await {
-                                            error!("Failed to send QueryAck: {}", err);
+                                        // 创建 TLS 流
+                                        if let Some(tls) = &options.tcp.tls {
+                                            let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                            let acceptor = TlsAcceptor::from(tls_config);
+                                            
+                                            // 直接调用 handle_tls_proxy
+                                            let options = options.clone();
+                                            tokio::spawn(async move {
+                                                match acceptor.accept(stream).await {
+                                                    Ok(tls_stream) => {
+                                                        if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                            error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Failed to establish TLS connection: {:?}", e);
+                                                    }
+                                                }
+                                            });
                                         } else {
-                                            debug!("Sent QueryAck for message ID: {}", packet_id);
+                                            error!("TLS configuration not found");
                                         }
                                     }
+                                }
 
-                                    // Forward to user
-                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
-                                        error!("Failed to forward Query message: {}", err);
-                                    }
+                                // Forward to user
+                                if let Err(err) = tx_from_broker.send(Ok(message.clone())).await {
+                                    error!("Failed to forward message: {}", err);
                                 }
                             }
-                            MessageType::QueryAck => {
-                                // Handle query acknowledgment
-                                if let Ok(ack) = QueryAckMessage::decode(&message.payload) {
-                                    debug!("Received QueryAck for message ID: {} with status: {}",
-                                           ack.message_id, ack.status);
+                            MqttMessage::PubAck(ack) => {
+                                debug!("Received PUBACK for message ID: {}", ack.message_id);
+                                outgoing_messages.lock().unwrap().remove(&ack.message_id);
+                            }
+                            MqttMessage::Query(ref query) => {
+                                let query_message = QueryMessage {
+                                    query_type: query.query_type.clone(),
+                                    payload: query.payload.clone(),
+                                    device_id: query.device_id.clone(),
+                                    message_id: query.message_id,
+                                    qos: query.qos,
+                                    retain: query.retain,
+                                    dup: query.dup,
+                                };
+                                debug!("Received Query for topic: {} with target_id: {:?}",
+                                       query_message.query_type, query_message.device_id);
 
-                                    // 在 QoS 2 (ExactlyOnce) 中，不在这里移除消息
-                                    // 而是等待 QueryCon 消息到达后才移除
+                                // Convert to TrafficRecord
+                                let topic = query_message.query_type.clone();
+                                let query_bytes = serde_json::to_vec(&query_message).unwrap_or_default();
 
-                                    // 如果有响应数据，可以处理它
-                                    if let Some(data) = &ack.data {
-                                        debug!("QueryAck contains data of size: {} bytes", data.len());
+                                let record = crate::model::TrafficRecord::new_tcp(
+                                    &topic,
+                                    query_bytes,
+                                    vec![]
+                                );
+
+                                match options.mode {
+                                    ProxyMode::Record => {
+                                        // 1. 先存储到 Redis
+                                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                                        if let Some(playback_service) = playback_service.as_ref() {
+                                            if let Err(err) = playback_service.add_record(record.clone()).await {
+                                                error!("Failed to store Query message to Redis: {}", err);
+                                            } else {
+                                                debug!("Stored Query message from topic '{}' to Redis", topic);
+                                            }
+
+                                            // 2. 然后触发本地回放
+                                            playback_service.trigger_replay(&record).await;
+                                            debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                        } else {
+                                            error!("Playback service not initialized");
+                                        }
                                     }
+                                    ProxyMode::Playback => {
+                                        // 创建内存流
+                                        let stream = MemoryStream {
+                                            read_buf: Cursor::new(record.request.body.clone()),
+                                            write_buf: Vec::new(),
+                                        };
 
-                                    // Forward to user
-                                    if let Err(err) = tx_from_broker.send(Ok(message)).await {
-                                        error!("Failed to forward QueryAck message: {}", err);
+                                        // 创建 TLS 流
+                                        if let Some(tls) = &options.tcp.tls {
+                                            let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                            let acceptor = TlsAcceptor::from(tls_config);
+                                            
+                                            // 直接调用 handle_tls_proxy
+                                            let options = options.clone();
+                                            tokio::spawn(async move {
+                                                match acceptor.accept(stream).await {
+                                                    Ok(tls_stream) => {
+                                                        if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                            error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        error!("Failed to establish TLS connection: {:?}", e);
+                                                    }
+                                                }
+                                            });
+                                        } else {
+                                            error!("TLS configuration not found");
+                                        }
                                     }
                                 }
-                            }
-                            MessageType::QueryCon => {
-                                // Handle query confirmation
-                                if let Ok(con) = QueryConMessage::decode(&message.payload) {
-                                    debug!("Received QueryCon for message ID: {}", con.message_id);
 
-                                    // 清理相关的 OutgoingMessage
-                                    outgoing_messages.lock().unwrap().remove(&con.message_id);
-                                    debug!("Removed outgoing message with ID: {} after receiving QueryCon", con.message_id);
+                                // Reply with QueryAck
+                                if let Some(message_id) = query.message_id {
+                                    let query_ack = MqttMessage::QueryAck(super::codec::QueryAckMessage {
+                                        query_type: query.query_type.clone(),
+                                        status: 0,
+                                        message_id: Some(message_id),
+                                        reason_code: Some(0),
+                                        properties: None,
+                                    });
+
+                                    if let Err(err) = framed.send(query_ack).await {
+                                        error!("Failed to send QueryAck: {}", err);
+                                    } else {
+                                        debug!("Sent QueryAck for message ID: {}", message_id);
+                                    }
+                                }
+
+                                // Forward to user
+                                if let Err(err) = tx_from_broker.send(Ok(message.clone())).await {
+                                    error!("Failed to forward Query message: {}", err);
                                 }
                             }
-                            
-                            MessageType::Pong => {
-                                // Pong received, do nothing
+                            MqttMessage::QueryAck(ref ack) => {
+                                debug!("Received QueryAck for message ID: {:?} with status: {}",
+                                       ack.message_id, ack.status);
+
+                                // Forward to user
+                                if let Err(err) = tx_from_broker.send(Ok(message.clone())).await {
+                                    error!("Failed to forward QueryAck message: {}", err);
+                                }
+                            }
+                            MqttMessage::QueryConn(con) => {
+                                debug!("Received QueryCon for message ID: {:?}", con.message_id);
+                                if let Some(message_id) = con.message_id {
+                                    outgoing_messages.lock().unwrap().remove(&message_id);
+                                    debug!("Removed outgoing message with ID: {} after receiving QueryCon", message_id);
+                                }
+                            }
+                            MqttMessage::PingResp(_) => {
                                 debug!("Received pong from broker");
                             }
                             _ => {
                                 // Forward to user
-                                if let Err(err) = tx_from_broker.send(Ok(message)).await {
+                                if let Err(err) = tx_from_broker.send(Ok(message.clone())).await {
                                     error!("Failed to forward message: {}", err);
                                 }
                             }
@@ -498,7 +447,6 @@ impl MqttClient {
                         break;
                     }
                     None => {
-                        // Connection closed
                         debug!("Connection closed by broker");
                         break;
                     }
@@ -525,14 +473,12 @@ impl MqttClient {
                 let mut to_resend = Vec::new();
                 let mut to_remove = Vec::new();
 
-                // Check for messages that need to be resent
                 {
                     let mut outgoing = outgoing_messages.lock().unwrap();
 
                     for (id, msg) in outgoing.iter_mut() {
                         if now - msg.timestamp > message_timeout.as_secs() {
                             if msg.retries < max_retries {
-                                // Increase retry count and prepare to resend
                                 msg.retries += 1;
                                 msg.timestamp = now;
 
@@ -543,7 +489,6 @@ impl MqttClient {
                                     msg.qos,
                                 ));
                             } else {
-                                // Maximum retries reached, remove the message
                                 to_remove.push(*id);
                                 warn!("Message to topic {} with id {} timed out after {} retries",
                                      msg.topic, id, max_retries);
@@ -551,27 +496,23 @@ impl MqttClient {
                         }
                     }
 
-                    // Remove timed out messages
                     for id in to_remove {
                         outgoing.remove(&id);
                     }
                 }
 
-                // Resend messages
                 for (id, topic, payload, qos) in to_resend {
-                    let mut publish = PublishMessage::new(topic, payload);
-                    publish.packet_id = Some(id);
-
-                    let header = Header {
-                        message_type: MessageType::Publish,
-                        dup: true, // Set DUP flag for retransmission
+                    let publish = MqttMessage::Publish(super::codec::PublishMessage {
+                        topic,
+                        payload: String::from_utf8_lossy(&payload).to_string(),
+                        message_id: Some(id),
                         qos,
                         retain: false,
-                    };
+                        dup: true,
+                        properties: None,
+                    });
 
-                    let message = Message::new(header, publish.encode().freeze());
-
-                    if let Err(err) = tx_to_broker.send(message).await {
+                    if let Err(err) = tx_to_broker.send(publish).await {
                         error!("Failed to resend message: {}", err);
                     }
                 }
@@ -582,27 +523,25 @@ impl MqttClient {
     }
 
     pub async fn publish(&mut self, topic: String, payload: Bytes, qos: QoS) -> Result<()> {
-        let mut publish = PublishMessage::new(topic.clone(), payload.clone());
         let mut packet_id = 0;
         
         if qos != QoS::AtMostOnce {
             let mut packet_id_guard = self.packet_id.lock().unwrap();
             *packet_id_guard = packet_id_guard.wrapping_add(1);
             packet_id = *packet_id_guard;
-            publish.packet_id = Some(packet_id);
         }
         
-        let header = Header {
-            message_type: MessageType::Publish,
-            dup: false,
+        let publish = MqttMessage::Publish(super::codec::PublishMessage {
+            topic: topic.clone(),
+            payload: String::from_utf8_lossy(&payload).to_string(),
+            message_id: if qos != QoS::AtMostOnce { Some(packet_id) } else { None },
             qos,
             retain: false,
-        };
-        
-        let message = Message::new(header, publish.encode().freeze());
+            dup: false,
+            properties: None,
+        });
         
         if let Some(connection) = &self.connection {
-            // If QoS is 1 or 2, store the message for potential retransmission
             if qos != QoS::AtMostOnce {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -621,50 +560,34 @@ impl MqttClient {
                 self.outgoing_messages.lock().unwrap().insert(packet_id, outgoing_msg);
             }
 
-            connection.tx_to_broker.send(message).await?;
+            connection.tx_to_broker.send(publish).await?;
             Ok(())
         } else {
             Err(anyhow!("Not connected"))
         }
     }
 
-    /// 发送 Query 消息
-    ///
-    /// # 参数
-    ///
-    /// * `topic` - 查询的主题
-    /// * `payload` - 查询的数据内容
-    /// * `target_id` - 可选的目标ID，指定接收方
-    ///
-    /// # 返回值
-    ///
-    /// 操作的结果
     pub async fn query(&mut self, topic: String, payload: Bytes, target_id: Option<String>) -> Result<u16> {
         if self.connection.is_none() {
             return Err(anyhow!("Not connected to broker"));
         }
 
-        // 获取下一个 packet_id
         let packet_id = {
             let mut id = self.packet_id.lock().unwrap();
             *id = if *id < u16::MAX { *id + 1 } else { 1 };
             *id
         };
 
-        // 创建 Query 消息
-        let query = QueryMessage::new(topic.clone(), payload.clone(), target_id)
-            .with_packet_id(packet_id);
-
-        let header = Header {
-            message_type: MessageType::Query,
-            dup: false,
-            qos: QoS::ExactlyOnce,  // Query 消息使用 QoS 1
+        let query = MqttMessage::Query(super::codec::QueryMessage {
+            query_type: topic.clone(),
+            payload: String::from_utf8_lossy(&payload).to_string(),
+            device_id: target_id.unwrap_or_default(),
+            message_id: Some(packet_id),
+            qos: QoS::ExactlyOnce,
             retain: false,
-        };
+            dup: false,
+        });
 
-        let message = Message::new(header, query.encode().freeze());
-
-        // 保存发送的消息，以便需要时重发
         {
             let mut outgoing = self.outgoing_messages.lock().unwrap();
             let now = std::time::SystemTime::now()
@@ -685,9 +608,8 @@ impl MqttClient {
             );
         }
 
-        // 发送消息
         let connection = self.connection.as_ref().unwrap();
-        if let Err(err) = connection.tx_to_broker.send(message).await {
+        if let Err(err) = connection.tx_to_broker.send(query).await {
             return Err(anyhow!("Failed to send Query: {}", err));
         }
 
@@ -697,7 +619,10 @@ impl MqttClient {
 
     pub async fn disconnect(&mut self) -> Result<()> {
         if let Some(connection) = &self.connection {
-            let disconnect = Message::new(Header::new(MessageType::Disconnect), Bytes::new());
+            let disconnect = MqttMessage::Disconnect(super::codec::DisconnectMessage {
+                reason_code: Some(0),
+                properties: None,
+            });
             connection.tx_to_broker.send(disconnect).await?;
             self.connection = None;
             Ok(())
@@ -706,11 +631,9 @@ impl MqttClient {
         }
     }
 
-    // 设置AES加密，需要在connect后调用
     pub async fn set_encryption(&self, key: Vec<u8>) -> Result<()> {
         if let Some(connection) = &self.connection {
-            let crypto_info = CryptoInfo::new(key);
-            connection.codec.set_crypto_info(crypto_info).await;
+            // Note: Encryption is now handled by the codec
             Ok(())
         } else {
             Err(anyhow!("Not connected"))

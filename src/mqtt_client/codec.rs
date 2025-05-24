@@ -1,340 +1,553 @@
-use super::crypto::{self, CryptoInfo};
-use super::message::{Message, MessageType};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
-use std::io::{self, Cursor};
-use std::sync::{Arc, Mutex};
+use serde::{Deserialize, Serialize};
+use std::io;
 use tokio_util::codec::{Decoder, Encoder};
 
-// 类似于Java中的MqttMessageEncoder/Decoder
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MqttMessage {
+    Connect(ConnectMessage),
+    ConnAck(ConnAckMessage),
+    Query(QueryMessage),
+    QueryAck(QueryAckMessage),
+    QueryConn(QueryConnMessage),
+    Publish(PublishMessage),
+    PubAck(PubAckMessage),
+    Subscribe(SubscribeMessage),
+    SubAck(SubAckMessage),
+    Unsubscribe(UnsubscribeMessage),
+    UnsubAck(UnsubAckMessage),
+    PingReq(PingReqMessage),
+    PingResp(PingRespMessage),
+    Disconnect(DisconnectMessage),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum QoS {
+    AtMostOnce = 0,
+    AtLeastOnce = 1,
+    ExactlyOnce = 2,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectMessage {
+    pub device_id: String,
+    pub clean_session: bool,
+    pub keep_alive: u32,
+    pub credentials: Option<Credentials>,
+    pub will: Option<WillMessage>,
+    pub protocol_version: u8,
+    pub protocol_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnAckMessage {
+    pub status: u8,
+    pub session_present: bool,
+    pub return_code: u8,
+    pub properties: Option<ConnAckProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnAckProperties {
+    pub session_expiry_interval: Option<u32>,
+    pub receive_maximum: Option<u16>,
+    pub maximum_qos: Option<u8>,
+    pub retain_available: Option<bool>,
+    pub maximum_packet_size: Option<u32>,
+    pub assigned_client_identifier: Option<String>,
+    pub topic_alias_maximum: Option<u16>,
+    pub reason_string: Option<String>,
+    pub wildcard_subscription_available: Option<bool>,
+    pub subscription_identifiers_available: Option<bool>,
+    pub shared_subscription_available: Option<bool>,
+    pub server_keep_alive: Option<u16>,
+    pub response_information: Option<String>,
+    pub server_reference: Option<String>,
+    pub authentication_method: Option<String>,
+    pub authentication_data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryMessage {
+    #[serde(rename = "type")]
+    pub query_type: String,
+    pub payload: String,
+    pub device_id: String,
+    pub message_id: Option<u16>,
+    pub qos: QoS,
+    pub retain: bool,
+    pub dup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryAckMessage {
+    #[serde(rename = "type")]
+    pub query_type: String,
+    pub status: u8,
+    pub message_id: Option<u16>,
+    pub reason_code: Option<u8>,
+    pub properties: Option<QueryAckProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryAckProperties {
+    pub reason_string: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryConnMessage {
+    #[serde(rename = "type")]
+    pub query_type: String,
+    pub payload: String,
+    pub device_id: String,
+    pub message_id: Option<u16>,
+    pub qos: QoS,
+    pub retain: bool,
+    pub dup: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishMessage {
+    pub topic: String,
+    pub payload: String,
+    pub message_id: Option<u16>,
+    pub qos: QoS,
+    pub retain: bool,
+    pub dup: bool,
+    pub properties: Option<PublishProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishProperties {
+    pub payload_format_indicator: Option<u8>,
+    pub message_expiry_interval: Option<u32>,
+    pub topic_alias: Option<u16>,
+    pub response_topic: Option<String>,
+    pub correlation_data: Option<Vec<u8>>,
+    pub user_property: Option<Vec<(String, String)>>,
+    pub subscription_identifier: Option<u32>,
+    pub content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubAckMessage {
+    pub message_id: u16,
+    pub reason_code: Option<u8>,
+    pub properties: Option<PubAckProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PubAckProperties {
+    pub reason_string: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeMessage {
+    pub message_id: u16,
+    pub subscriptions: Vec<Subscription>,
+    pub properties: Option<SubscribeProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Subscription {
+    pub topic_filter: String,
+    pub qos: QoS,
+    pub no_local: bool,
+    pub retain_as_published: bool,
+    pub retain_handling: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeProperties {
+    pub subscription_identifier: Option<u32>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAckMessage {
+    pub message_id: u16,
+    pub reason_codes: Vec<u8>,
+    pub properties: Option<SubAckProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubAckProperties {
+    pub reason_string: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsubscribeMessage {
+    pub message_id: u16,
+    pub topic_filters: Vec<String>,
+    pub properties: Option<UnsubscribeProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsubscribeProperties {
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsubAckMessage {
+    pub message_id: u16,
+    pub reason_codes: Vec<u8>,
+    pub properties: Option<UnsubAckProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnsubAckProperties {
+    pub reason_string: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingReqMessage {
+    pub properties: Option<PingReqProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingReqProperties {
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingRespMessage {
+    pub properties: Option<PingRespProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PingRespProperties {
+    pub reason_string: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisconnectMessage {
+    pub reason_code: Option<u8>,
+    pub properties: Option<DisconnectProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DisconnectProperties {
+    pub session_expiry_interval: Option<u32>,
+    pub reason_string: Option<String>,
+    pub server_reference: Option<String>,
+    pub user_property: Option<Vec<(String, String)>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Credentials {
+    pub app_key: String,
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WillMessage {
+    pub topic: String,
+    pub payload: String,
+    pub qos: QoS,
+    pub retain: bool,
+    pub properties: Option<WillProperties>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WillProperties {
+    pub payload_format_indicator: Option<u8>,
+    pub message_expiry_interval: Option<u32>,
+    pub content_type: Option<String>,
+    pub response_topic: Option<String>,
+    pub correlation_data: Option<Vec<u8>>,
+    pub user_property: Option<Vec<(String, String)>>,
+    pub will_delay_interval: Option<u32>,
+}
+
 pub struct MqttCodec {
-    secret_key: Arc<Mutex<Option<[u8; crypto::KEY_LEN]>>>,
-    crypto_info: Arc<Mutex<Option<CryptoInfo>>>,
+    max_frame_length: usize,
 }
 
 impl MqttCodec {
-    pub fn new() -> Self {
-        Self {
-            secret_key: Arc::new(Mutex::new(None)),
-            crypto_info: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    pub async fn set_secret_key(&self, key: [u8; crypto::KEY_LEN]) {
-        if let Ok(mut secret_key) = self.secret_key.lock() {
-            *secret_key = Some(key);
-        }
-    }
-
-    pub async fn set_crypto_info(&self, info: CryptoInfo) {
-        if let Ok(mut crypto_info) = self.crypto_info.lock() {
-            *crypto_info = Some(info);
-        }
-    }
-
-    pub fn decode_bytes(&mut self, src: &[u8]) -> Result<Message, io::Error> {
-        let mut data = BytesMut::from(src);
-        let message = self.decode(&mut data)?;
-        if let Some(message) = message {
-            Ok(message)
-        } else {
-            Err(io::Error::new(io::ErrorKind::Other, "Failed to decode message"))
-        }
+    pub fn new(max_frame_length: usize) -> Self {
+        Self { max_frame_length }
     }
 }
 
 impl Decoder for MqttCodec {
-    type Item = Message;
+    type Item = MqttMessage;
     type Error = io::Error;
 
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        if src.len() < 2 {
-            // 需要至少两个字节来解析类型和长度
+        if src.len() < 4 {
             return Ok(None);
         }
 
-        // 标记当前位置以便需要时重置
-        let mut cursor = Cursor::new(&src[..]);
-        
-        // 读取第一个字节，它包含消息类型和标志
-        let first_byte = cursor.get_u8();
-        
-        // 计算消息长度
-        let mut multiplier = 1;
-        let mut remaining_length = 0;
-        let mut length_size = 0;
-        
-        loop {
-            if cursor.position() as usize >= src.len() {
-                // 没有足够的字节来确定长度
-                return Ok(None);
-            }
-            
-            length_size += 1;
-            let digit = cursor.get_u8();
-            remaining_length += (digit & 0x7F) as usize * multiplier;
-            multiplier *= 128;
-            
-            if multiplier > 128 * 128 * 128 {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "Malformed remaining length"));
-            }
-            
-            if (digit & 0x80) == 0 {
-                break;
-            }
+        // Read message length (first 4 bytes)
+        let mut length_bytes = [0u8; 4];
+        src.copy_to_slice(&mut length_bytes);
+        let length = u32::from_be_bytes(length_bytes) as usize;
+
+        if length > self.max_frame_length {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Frame of length {} is too large", length),
+            ));
         }
-        
-        let total_length = 1 + length_size + remaining_length;
-        
-        if src.len() < total_length {
-            // 消息不完整，等待更多数据
+
+        if src.len() < length + 4 {
             return Ok(None);
         }
+
+        // Read message type (1 byte after length)
+        let msg_type = src[4];
         
-        // 提取完整消息
-        let mut data = src.split_to(total_length).freeze();
-        
-        // 确定起始偏移量，与Java代码一致
-        let start_offset = 1 + length_size;
-        
-        // 获取消息类型
-        let msg_type = (first_byte >> 4) & 0x0F;
-        let message_type = match msg_type {
-            0 => MessageType::Reserve1,
-            1 => MessageType::Connect,
-            2 => MessageType::ConnAck,
-            3 => MessageType::Publish,
-            4 => MessageType::PubAck,
-            5 => MessageType::Query,
-            6 => MessageType::QueryAck,
-            7 => MessageType::QueryCon,
-            8 => MessageType::Reconnect,
-            9 => MessageType::ReconnectAck,
-            10 => MessageType::Unsubscribe,
-            11 => MessageType::UnsubAck,
-            12 => MessageType::Ping,
-            13 => MessageType::Pong,
-            14 => MessageType::Disconnect,
-            15 => MessageType::Reserve2,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid message type")),
-        };
-        
-        // 创建可变数据副本以进行解密
-        let mut data_vec = data.to_vec();
-        
-        // 根据消息类型应用不同的解密策略
-        match message_type {
-            MessageType::Ping | MessageType::Pong => {
-                // 为Ping/Pong消息应用XOR混淆
-                if let Ok(secret_key_guard) = self.secret_key.lock() {
-                    if let Some(key) = &*secret_key_guard {
-                        crypto::obfuscation(&mut data_vec, key, start_offset);
-                    }
-                }
+        // Read the actual message payload
+        let payload = src[5..5 + length].to_vec();
+        src.advance(length + 5);
+
+        // Deserialize based on message type
+        let message = match msg_type {
+            1 => {
+                let connect: ConnectMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Connect(connect)
             }
-            MessageType::Connect => {
-                // 从Connect消息中提取密钥
-                let secret_key = crypto::get_secret_key(&data_vec, start_offset);
-                if let Ok(mut secret_key_guard) = self.secret_key.lock() {
-                    *secret_key_guard = Some(secret_key);
-                }
+            2 => {
+                let conn_ack: ConnAckMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::ConnAck(conn_ack)
             }
-            MessageType::Reserve1 | MessageType::Reserve2 => {
-                // 不做任何处理
+            3 => {
+                let query: QueryMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Query(query)
+            }
+            4 => {
+                let query_ack: QueryAckMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::QueryAck(query_ack)
+            }
+            5 => {
+                let query_conn: QueryConnMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::QueryConn(query_conn)
+            }
+            6 => {
+                let publish: PublishMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Publish(publish)
+            }
+            7 => {
+                let pub_ack: PubAckMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::PubAck(pub_ack)
+            }
+            8 => {
+                let subscribe: SubscribeMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Subscribe(subscribe)
+            }
+            9 => {
+                let sub_ack: SubAckMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::SubAck(sub_ack)
+            }
+            10 => {
+                let unsubscribe: UnsubscribeMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Unsubscribe(unsubscribe)
+            }
+            11 => {
+                let unsub_ack: UnsubAckMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::UnsubAck(unsub_ack)
+            }
+            12 => {
+                let ping_req: PingReqMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::PingReq(ping_req)
+            }
+            13 => {
+                let ping_resp: PingRespMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::PingResp(ping_resp)
+            }
+            14 => {
+                let disconnect: DisconnectMessage = serde_json::from_slice(&payload)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                MqttMessage::Disconnect(disconnect)
             }
             _ => {
-                // 对其他所有消息类型
-                let mut has_crypto = false;
-                if let Ok(crypto_info_guard) = self.crypto_info.lock() {
-                    has_crypto = crypto_info_guard.is_some();
-                }
-                
-                if has_crypto {
-                    // 使用AES解密
-                    let crypto_key = if let Ok(crypto_info_guard) = self.crypto_info.lock() {
-                        crypto_info_guard.as_ref().map(|info| info.key.clone())
-                    } else {
-                        None
-                    };
-                    
-                    if let Some(key) = crypto_key {
-                        let mut payload = Vec::new();
-                        payload.extend_from_slice(&data_vec[start_offset..]);
-                        
-                        match crypto::aes_decode(&key, &payload) {
-                            Ok(decoded) => {
-                                // 替换原始数据中的有效载荷
-                                let mut new_data = Vec::with_capacity(start_offset + decoded.len());
-                                new_data.extend_from_slice(&data_vec[..start_offset]);
-                                new_data.extend_from_slice(&decoded);
-                                data_vec = new_data;
-                            }
-                            Err(e) => {
-                                return Err(io::Error::new(io::ErrorKind::InvalidData, 
-                                    format!("AES decryption error: {}", e)));
-                            }
-                        }
-                    }
-                } else {
-                    // 使用XOR混淆
-                    if let Ok(secret_key_guard) = self.secret_key.lock() {
-                        if let Some(key) = &*secret_key_guard {
-                            crypto::obfuscation(&mut data_vec, key, start_offset);
-                        }
-                    }
-                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Unknown message type: {}", msg_type),
+                ))
             }
-        }
-        
-        // 将修改后的数据转换回Bytes
-        data = Bytes::from(data_vec);
-        
-        // 尝试解析消息
-        match Message::decode(&data) {
-            Ok(message) => Ok(Some(message)),
-            Err(e) => Err(io::Error::new(io::ErrorKind::InvalidData, 
-                format!("Failed to decode message: {}", e))),
-        }
-    }
-    
-    fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        match self.decode(buf)? {
-            Some(frame) => Ok(Some(frame)),
-            None => {
-                if buf.is_empty() {
-                    Ok(None)
-                } else {
-                    Err(io::Error::new(io::ErrorKind::Other, "bytes remaining on stream").into())
-                }
-            }
-        }
-    }
-    
-    fn framed<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Sized>(self, io: T) -> tokio_util::codec::Framed<T, Self>
-    where
-        Self: Sized,
-    {
-        tokio_util::codec::Framed::new(io, self)
+        };
+
+        Ok(Some(message))
     }
 }
 
-impl Encoder<Message> for MqttCodec {
+impl Encoder<MqttMessage> for MqttCodec {
     type Error = io::Error;
 
-    fn encode(&mut self, item: Message, dst: &mut BytesMut) -> Result<(), Self::Error> {
-        // 首先编码消息
-        let mut data = item.encode();
-        let data_vec = data.to_vec();
+    fn encode(&mut self, item: MqttMessage, dst: &mut BytesMut) -> Result<(), Self::Error> {
+        let (msg_type, payload) = match item {
+            MqttMessage::Connect(msg) => (1, serde_json::to_vec(&msg)?),
+            MqttMessage::ConnAck(msg) => (2, serde_json::to_vec(&msg)?),
+            MqttMessage::Query(msg) => (3, serde_json::to_vec(&msg)?),
+            MqttMessage::QueryAck(msg) => (4, serde_json::to_vec(&msg)?),
+            MqttMessage::QueryConn(msg) => (5, serde_json::to_vec(&msg)?),
+            MqttMessage::Publish(msg) => (6, serde_json::to_vec(&msg)?),
+            MqttMessage::PubAck(msg) => (7, serde_json::to_vec(&msg)?),
+            MqttMessage::Subscribe(msg) => (8, serde_json::to_vec(&msg)?),
+            MqttMessage::SubAck(msg) => (9, serde_json::to_vec(&msg)?),
+            MqttMessage::Unsubscribe(msg) => (10, serde_json::to_vec(&msg)?),
+            MqttMessage::UnsubAck(msg) => (11, serde_json::to_vec(&msg)?),
+            MqttMessage::PingReq(msg) => (12, serde_json::to_vec(&msg)?),
+            MqttMessage::PingResp(msg) => (13, serde_json::to_vec(&msg)?),
+            MqttMessage::Disconnect(msg) => (14, serde_json::to_vec(&msg)?),
+        };
+
+        let length = payload.len() as u32;
         
-        // 确定起始偏移量
-        let header_len = 1; // 固定头部1字节
-        let len = item.payload.len();
-        let mut length_size = 0;
+        // Write message length (4 bytes)
+        dst.put_u32(length);
         
-        // 计算长度字段大小
-        let mut temp = len;
-        loop {
-            length_size += 1;
-            temp /= 128;
-            if temp == 0 {
-                break;
-            }
-        }
+        // Write message type (1 byte)
+        dst.put_u8(msg_type);
         
-        let start_offset = header_len + length_size;
-        
-        // 根据消息类型应用不同的加密策略
-        match item.header.message_type {
-            MessageType::Ping | MessageType::Pong => {
-                // 为Ping/Pong消息应用XOR混淆
-                if let Ok(secret_key_guard) = self.secret_key.lock() {
-                    if let Some(key) = &*secret_key_guard {
-                        let mut data_mut = data.to_vec();
-                        crypto::obfuscation(&mut data_mut, key, start_offset);
-                        data = BytesMut::from(&data_mut[..]);
-                    }
-                }
-            }
-            MessageType::Reserve1 | MessageType::Reserve2 => {
-                // 不做任何处理
-            }
-            _ => {
-                // 对其他所有消息类型
-                let mut has_crypto = false;
-                if let Ok(crypto_info_guard) = self.crypto_info.lock() {
-                    has_crypto = crypto_info_guard.is_some();
-                }
-                
-                if has_crypto {
-                    // 使用AES加密
-                    let crypto_key = if let Ok(crypto_info_guard) = self.crypto_info.lock() {
-                        crypto_info_guard.as_ref().map(|info| info.key.clone())
-                    } else {
-                        None
-                    };
-                    
-                    if let Some(key) = crypto_key {
-                        let payload = &data_vec[start_offset..];
-                        
-                        match crypto::aes_encode(&key, payload) {
-                            Ok(encoded) => {
-                                // 重建消息结构
-                                let mut output = BytesMut::new();
-                                
-                                // 写入原始类型字节
-                                let code = data_vec[0];
-                                output.put_u8(code);
-                                
-                                // 初始化校验码占位符
-                                output.put_u8(0);
-                                
-                                // 写入加密后数据的长度
-                                let mut len = encoded.len();
-                                let mut digest = 0;
-                                
-                                loop {
-                                    let b = (len & 0x7F) as u8;
-                                    len >>= 7;
-                                    
-                                    digest ^= b;
-                                    
-                                    if len > 0 {
-                                        output.put_u8(b | 0x80);
-                                    } else {
-                                        output.put_u8(b);
-                                        break;
-                                    }
-                                }
-                                
-                                // 写入加密后的数据
-                                output.extend_from_slice(&encoded);
-                                
-                                // 更新校验码
-                                let bytes = output.to_vec();
-                                data = BytesMut::from(&bytes[..]);
-                                data[1] = digest as u8;
-                            }
-                            Err(e) => {
-                                return Err(io::Error::new(io::ErrorKind::InvalidData, 
-                                    format!("AES encryption error: {}", e)));
-                            }
-                        }
-                    }
-                } else {
-                    // 使用XOR混淆
-                    if let Ok(secret_key_guard) = self.secret_key.lock() {
-                        if let Some(key) = &*secret_key_guard {
-                            let mut data_mut = data.to_vec();
-                            crypto::obfuscation(&mut data_mut, key, start_offset);
-                            data = BytesMut::from(&data_mut[..]);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 写入最终数据
-        dst.extend_from_slice(&data);
-        
+        // Write payload
+        dst.extend_from_slice(&payload);
+
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageType {
+    Connect = 1,
+    ConnAck = 2,
+    Publish = 3,
+    PubAck = 4,
+    Subscribe = 8,
+    SubAck = 9,
+    Unsubscribe = 10,
+    UnsubAck = 11,
+    PingReq = 12,
+    PingResp = 13,
+    Disconnect = 14,
+    Query = 15,
+    QueryAck = 16,
+    QueryConn = 17,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub header: MessageHeader,
+    #[serde(with = "bytes_serde")]
+    pub payload: Bytes,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageHeader {
+    pub message_type: MessageType,
+    pub qos: QoS,
+    pub retain: bool,
+    pub dup: bool,
+}
+
+impl PublishMessage {
+    pub fn decode(payload: &[u8]) -> Result<Self, io::Error> {
+        serde_json::from_slice(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    pub fn encode(&self) -> Bytes {
+        Bytes::from(serde_json::to_vec(self).unwrap())
+    }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "topic" => self.topic = String::new(),
+            "payload" => self.payload = String::new(),
+            "message_id" => self.message_id = None,
+            "qos" => self.qos = QoS::AtMostOnce,
+            "retain" => self.retain = false,
+            "dup" => self.dup = false,
+            "properties" => self.properties = None,
+            _ => {}
+        }
+    }
+
+    pub fn field_names() -> Vec<&'static str> {
+        vec!["topic", "payload", "message_id", "qos", "retain", "dup", "properties"]
+    }
+}
+
+impl QueryMessage {
+    pub fn decode(payload: &[u8]) -> Result<Self, io::Error> {
+        serde_json::from_slice(payload).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    pub fn encode(&self) -> Bytes {
+        Bytes::from(serde_json::to_vec(self).unwrap())
+    }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "type" => self.query_type = String::new(),
+            "payload" => self.payload = String::new(),
+            "device_id" => self.device_id = String::new(),
+            "message_id" => self.message_id = None,
+            "qos" => self.qos = QoS::AtMostOnce,
+            "retain" => self.retain = false,
+            "dup" => self.dup = false,
+            _ => {}
+        }
+    }
+
+    pub fn field_names() -> Vec<&'static str> {
+        vec!["type", "payload", "device_id", "message_id", "qos", "retain", "dup"]
+    }
+}
+
+impl Message {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut buf = BytesMut::new();
+        // Write message type (1 byte)
+        buf.put_u8(self.header.message_type as u8);
+        // Write QoS (1 byte)
+        buf.put_u8(self.header.qos as u8);
+        // Write flags (1 byte)
+        let flags = (self.header.retain as u8) | ((self.header.dup as u8) << 1);
+        buf.put_u8(flags);
+        // Write payload length (4 bytes)
+        buf.put_u32(self.payload.len() as u32);
+        // Write payload
+        buf.extend_from_slice(&self.payload);
+        buf.to_vec()
+    }
+}
+
+// Add serde serialization support for Bytes
+mod bytes_serde {
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serializer, Serialize};
+
+    pub fn serialize<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Bytes, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+        Ok(Bytes::from(bytes))
     }
 } 
