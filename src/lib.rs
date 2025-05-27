@@ -40,6 +40,9 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use tokio::task::JoinHandle;
+use crate::proxy::tcp_protobuf_server::start_tcp_proto_server;
+use std::net::SocketAddr;
+use std::str::FromStr;
 
 /// 全局共享的回放服务实例
 /// 使用 once_cell 确保单例模式和线程安全
@@ -101,11 +104,32 @@ pub async fn start_qproxy(options: &Options) -> Result<Vec<JoinHandle<()>>, Erro
     let server = ProxyServer::new((*options).clone());
     let (http_handle, tcp_handle) = server.start().await;
 
-    let handles = if let Some(sync_handle) = sync_handle {
+    let mut handles = if let Some(sync_handle) = sync_handle {
         vec![http_handle, tcp_handle, sync_handle]
     } else {
         vec![http_handle, tcp_handle]
     };
+
+    // 启动 TCP protobuf 服务器（如果启用）
+    if let Some(tcp_proto) = &options.tcp_proto {
+        if tcp_proto.enabled {
+            let addr = format!("{}:{}", tcp_proto.host, tcp_proto.port);
+            let addr = SocketAddr::from_str(&addr).map_err(|e| Error::Config(e.to_string()))?;
+            
+            let proto_handle = tokio::spawn(async move {
+                match start_tcp_proto_server(addr).await {
+                    Ok(_) => info!("TCP protobuf server started successfully"),
+                    Err(e) => {
+                        error!("Failed to start TCP protobuf server: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            });
+            
+            handles.push(proto_handle);
+        }
+    }
+
     Ok(handles)
 }
 

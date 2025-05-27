@@ -1,5 +1,6 @@
 pub mod http;
 pub mod tcp;
+pub mod tcp_protobuf_server;
 
 use crate::filter::response_filter::ResponseFilter;
 use crate::options::Options;

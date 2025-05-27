@@ -14,6 +14,11 @@
             "tls_key": "key.pem"
         }
     },
+    "tcp_proto": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8085
+    },
     "mode": "Record",
     "sync": {
         "enabled": false,
@@ -25,7 +30,7 @@
         "tls": true
     },
     "redis": {
-        "url": "redis://default:mr.xi9999@localhost:6379",
+        "url": "redis://default:230Ol187aD@localhost:6379",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3

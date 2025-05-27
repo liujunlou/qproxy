@@ -12,6 +12,8 @@ pub struct Options {
     pub http: HttpOptions,
     // tcp代理节点
     pub tcp: TcpOptions,
+    // tcp protobuf 服务器
+    pub tcp_proto: Option<TcpProtoOptions>,
     // 流量回放服务节点
     pub peer: Option<PeerOptions>,
     // 服务发现
@@ -148,6 +150,13 @@ pub struct RedisOptions {
     pub retry_count: Option<u32>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TcpProtoOptions {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+}
+
 impl Options {
     // 加载配置
     pub fn new() -> Result<Self, Error> {
@@ -175,6 +184,7 @@ impl Default for Options {
                 downstream: vec![],
                 tls: None,
             },
+            tcp_proto: None,
             peer: None,
             service_discovery: ServiceDiscoveryOptions {
                 provider: ServiceDiscoveryProvider::Static,
