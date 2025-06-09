@@ -114,7 +114,7 @@ impl SyncService {
     }
 
     /// 从peer拉取流量记录并推到回放服务
-    async fn sync_from_peer(
+    pub async fn sync_from_peer(
         client: &Arc<Client>,
         peer: &PeerOptions,
         playback_service: Arc<PlaybackService>,
