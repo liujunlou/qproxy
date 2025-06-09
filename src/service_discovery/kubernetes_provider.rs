@@ -3,16 +3,15 @@ use crate::errors::Error;
 use async_trait::async_trait;
 use http::Uri;
 use k8s_openapi::api::core::v1::Service;
-use kube::config::Kubeconfig;
 use kube::{
     api::{Api, ListParams},
-    config::{self, AuthInfo, KubeConfigOptions},
+    config::{AuthInfo, KubeConfigOptions},
     Client, Config,
 };
 use secrecy::SecretString;
 use std::{collections::HashMap, str::FromStr};
 use tokio::fs;
-use tracing::{error, info};
+use tracing::info;
 
 pub struct KubernetesServiceDiscovery {
     client: Client,
