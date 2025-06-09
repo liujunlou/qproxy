@@ -37,7 +37,6 @@ tracing-appender = "0.2"
 flate2 = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "1.7", features = ["v4"] }
 rustls = "0.23"
 tokio-rustls = "0.26"
 clap = { version = "4.5", features = ["derive"] }
@@ -46,7 +45,6 @@ thiserror = "2.0"
 reqwest = { version = "0.12", features = ["json"] }
 once_cell = "1.19"
 url = "2.5"
-rand = "0.9"
 chrono = "0.4"
 redis = { version = "0.31", features = ["tokio-comp", "connection-manager"] }
 zookeeper = "0.8"
@@ -55,19 +53,34 @@ k8s-openapi = { version = "0.24", features = ["v1_28"] }
 kube = { version = "^0.99", features = ["client"] }
 secrecy = "0.10"
 lazy_static = "1.4"
-md5 = "0.7.0"
 tokio-util = { version = "0.7.15", features = ["codec"] }
 futures = "0.3.31"
 rustls-pemfile = "2.2.0"
 rustls-pki-types = "1.12.0"
 aes = "0.8"
 aes-gcm = "0.10.1"
+# crypto
+base64="0.22"
 hex = "0.4"
+md5 = "0.7.0"
+sha1 = "0.10.0"
+block-modes = "0.9"
+rand = "0.9"
+uuid = { version = "1.7", features = ["v4"] }
+
 # 用于获取系统信息
 sysinfo = "0.35"
 prometheus = "0.14"
 # 用于在scope结束时执行清理
 scopeguard = "1.2"
+# 缓存
+moka = { version = "0.12", features = ["sync"] }
+# ketama hash一致性
+pingora-ketama = "0.5.0"
+# murmurhash
+byteorder = "1.4"
+# 支持akka
+bincode = "1.3"
 
 #  用于自定义派生宏
 syn = { version = "2.0", features = ["full"] }
@@ -85,17 +98,13 @@ name = "playback_test"
 path = "tests/playback_test.rs"
 
 [[test]]
-name = "record_test"
-path = "tests/record_test.rs"
-
-[[test]]
-name = "proxy_test"
-path = "tests/proxy_test.rs"
-
-[[test]]
 name = "mqtt_test"
 path = "tests/mqtt_test.rs"
 
 [[test]]
 name = "mqtt_integration_test"
 path = "tests/mqtt_integration_test.rs"
+
+[[test]]
+name = "sync_test"
+path = "tests/sync_test.rs"

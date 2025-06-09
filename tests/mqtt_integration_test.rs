@@ -1,5 +1,5 @@
 use qproxy::mqtt_client::{
-    message::{QoS, Message},
+    message::QoS,
     client::MqttClient
 };
 use bytes::Bytes;

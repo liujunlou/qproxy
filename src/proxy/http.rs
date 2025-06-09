@@ -5,9 +5,8 @@ use bytes::Bytes;
 use http::{Request, Response};
 use http_body_util::{BodyExt, Full};
 use hyper::{server::conn::http1, service::service_fn};
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tokio::sync::broadcast;
 use tracing::{error, info};
 
 use crate::{get_shutdown_rx, ONCE_FILTER_CHAIN};
@@ -22,10 +21,10 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let listener = TcpListener::bind(addr).await?;
     info!("HTTP proxy server started at {}", addr);
 
-    let mut shutdown_rx = get_shutdown_rx().await;
 
     loop {
         let options = options.clone();
+        let mut shutdown_rx = get_shutdown_rx().await;
 
         tokio::select! {
             accept_result = listener.accept() => {

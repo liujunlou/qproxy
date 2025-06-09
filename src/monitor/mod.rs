@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use crate::options::ProxyMode;
-use prometheus::{Counter, Gauge, Histogram, register_counter, register_gauge, register_histogram};
+use prometheus::{Gauge, Histogram, register_gauge, register_histogram};
 
 pub mod collector;
 
@@ -43,10 +43,23 @@ lazy_static::lazy_static! {
         "qproxy_network_io_gauge",
         "The current network IO of qproxy"
     ).expect("Failed to register network IO gauge");
+
     pub static ref NETWORK_CONNECTIONS_GAUGE: Gauge = register_gauge!(
         "qproxy_network_connections_gauge",
         "The current number of network connections of qproxy"
     ).expect("Failed to register network connections gauge");
+
+    // actor sender inward 流量监控
+    pub static ref ACTOR_SENDER_INWARD_TIMER: Histogram = register_histogram!(
+        "qproxy_actor_sender_inward_timer",
+        "The total time taken to process actor sender inward requests"
+    ).expect("Failed to register traffic size counter");
+
+    // actor sender outward 流量监控
+    pub static ref ACTOR_SENDER_OUTWARD_TIMER: Histogram = register_histogram!(
+        "qproxy_actor_sender_outward_timer",
+        "The total time taken to process actor sender outward requests"
+    ).expect("Failed to register traffic size counter");
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

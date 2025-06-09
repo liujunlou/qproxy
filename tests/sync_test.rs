@@ -3,7 +3,6 @@ use qproxy::{
     options::{Options, PeerOptions},
     sync::SyncService,
 };
-use std::time::Duration;
 
 #[tokio::test]
 async fn test_sync_service_creation() {

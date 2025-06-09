@@ -1,5 +1,4 @@
 use reqwest::{Client, ClientBuilder};
-use scopeguard::defer;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;

@@ -1,13 +1,13 @@
 use crate::PLAYBACK_SERVICE;
 
 use super::codec::MqttCodec;
-use super::crypto::{self, CryptoInfo};
+use super::crypto::CryptoInfo;
 use super::message::{
-    ConnAckMessage, ConnectMessage, DisconnectMessage, Header, Message, MessageType, PingMessage,
+    ConnAckMessage, ConnectMessage, Header, Message, MessageType, PingMessage,
     PubAckMessage, PublishMessage, QoS, QueryAckMessage, QueryConMessage, QueryMessage, ServerPublishMessage,
 };
 use anyhow::{anyhow, Result};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use futures::{FutureExt, SinkExt, StreamExt};
 use std::{
     collections::HashMap,
@@ -15,7 +15,6 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
     net::TcpStream,
     sync::mpsc,
     time,

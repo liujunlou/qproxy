@@ -4,7 +4,7 @@ use prometheus::TextEncoder;
 use redis::{AsyncCommands, Commands};
 use tokio::time::{interval, Duration};
 use sysinfo::{System, Networks};
-use crate::{errors::Error, monitor::MetricsCollector, options::{Options, ProxyMode}};
+use crate::{errors::Error, monitor::MetricsCollector, options::Options};
 
 use super::{ServiceStatus, CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE, NETWORK_CONNECTIONS_GAUGE, NETWORK_IO_GAUGE};
 

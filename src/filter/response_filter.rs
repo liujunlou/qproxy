@@ -35,6 +35,7 @@ impl Filter for ResponseFilter {
                 .decode_bytes(&filtered.response.body)
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
             
+            // TODO: 处理消息内部的字段过滤
             // 根据消息类型处理
             let updated_payload = match msg.header.message_type {
                 MessageType::Publish => {

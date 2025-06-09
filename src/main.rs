@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use qproxy::{errors::Error, logger, options::Options, start_qproxy, get_shutdown_rx, send_shutdown_signal};
+use qproxy::{errors::Error, logger, options::Options, start_qproxy, send_shutdown_signal};
 use rustls::{pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer}, ServerConfig};
 use tokio::signal;
 use tokio::time::timeout;
