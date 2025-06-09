@@ -99,7 +99,7 @@ async fn test_sync_from_peer() {
         &client,
         &peer,
         qproxy::PLAYBACK_SERVICE
-            .lock()
+            .read()
             .await
             .as_ref()
             .unwrap()

@@ -13,7 +13,7 @@ pub struct Options {
     // tcp代理节点
     pub tcp: TcpOptions,
     // tcp protobuf 服务器
-    pub tcp_proto: Option<TcpProtoOptions>,
+    pub grpc: Option<GrpcOptions>,
     // 流量回放目标服务节点
     pub peer: Option<PeerOptions>,
     // 服务发现
@@ -151,7 +151,7 @@ pub struct RedisOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct TcpProtoOptions {
+pub struct GrpcOptions {
     pub enabled: bool,
     pub host: String,
     pub port: u16,
@@ -184,7 +184,7 @@ impl Default for Options {
                 downstream: vec![],
                 tls: None,
             },
-            tcp_proto: None,
+            grpc: None,
             peer: None,
             service_discovery: ServiceDiscoveryOptions {
                 provider: ServiceDiscoveryProvider::Static,

@@ -1,6 +1,6 @@
 pub mod http;
 pub mod tcp;
-pub mod tcp_protobuf_server;
+pub mod grpc;
 
 use crate::filter::response_filter::ResponseFilter;
 use crate::options::Options;
@@ -21,9 +21,10 @@ impl ProxyServer {
         }
     }
 
-    pub async fn start(&self) -> (JoinHandle<()>, JoinHandle<()>) {
+    pub async fn start(&self) -> Vec<JoinHandle<()>> {
         let http_server = self.options.clone();
         let tcp_server = self.options.clone();
+        let grpc_server = self.options.clone();
 
         // 启动 HTTP 和 TCP 代理服务器
         let http_handle = tokio::spawn(async move {
@@ -38,6 +39,12 @@ impl ProxyServer {
                 std::process::exit(1);
             }
         });
+        let grpc_handle = tokio::spawn(async move {
+            if let Err(e) = self::grpc::start_server(grpc_server.clone()).await {
+                error!("gRPC server failed to start: {}", e);
+                std::process::exit(1);
+            }
+        });
 
         // 添加 HTTP 代理服务器的过滤器
         ONCE_FILTER_CHAIN
@@ -47,7 +54,7 @@ impl ProxyServer {
                 self.options.http.filter_fields.clone(),
             )));
 
-        (http_handle, tcp_handle)
+        vec![http_handle, tcp_handle, grpc_handle]
     }
 }
 

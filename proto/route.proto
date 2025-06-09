@@ -6,12 +6,6 @@ service RouteService {
     rpc SendMessage (RouteMessage) returns (RouteResponse);
 }
 
-service ProxyService {
-    rpc Record(RouteMessage) returns (RouteResponse);
-    rpc Transmission(RouteMessage) returns (RouteResponse);
-    rpc Playback(RouteMessage) returns (RouteResponse);
-}
-
 message RouteMessage {
     string message_id = 1;
     string method = 2;

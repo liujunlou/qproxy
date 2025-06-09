@@ -19,13 +19,13 @@ pub mod proxy;
 pub mod record;
 pub mod service_discovery;
 pub mod sync;
+pub mod client;
 pub mod mqtt_client {
     pub mod client;
     pub mod codec;
 }
 pub mod monitor;
 
-use crate::proxy::tcp_protobuf_server::start_tcp_proto_server;
 use errors::Error;
 use filter::FilterChain;
 use monitor::collector::MetricsCollectorTask;
@@ -37,8 +37,6 @@ use rustls::ServerConfig;
 use service_discovery::ServiceRegistry;
 use std::fs::File;
 use std::io::BufReader;
-use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinHandle;
@@ -46,8 +44,8 @@ use tracing::{error, info};
 
 /// 全局共享的回放服务实例
 /// 使用 once_cell 确保单例模式和线程安全
-pub static PLAYBACK_SERVICE: Lazy<Arc<Mutex<Option<Arc<PlaybackService>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(None)));
+pub static PLAYBACK_SERVICE: Lazy<Arc<RwLock<Option<Arc<PlaybackService>>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(None)));
 
 /// 全局共享的服务注册表实例
 /// 使用 once_cell 确保单例模式和线程安全
@@ -102,35 +100,13 @@ pub async fn start_qproxy(options: &Options) -> Result<Vec<JoinHandle<()>>, Erro
 
     // 启动代理服务器
     let server = ProxyServer::new((*options).clone());
-    let (http_handle, tcp_handle) = server.start().await;
+    let mut handlers = server.start().await;
 
-    let mut handles = if let Some(sync_handle) = sync_handle {
-        vec![http_handle, tcp_handle, sync_handle]
-    } else {
-        vec![http_handle, tcp_handle]
-    };
-
-    // 启动 TCP protobuf 服务器（如果启用）
-    if let Some(tcp_proto) = &options.tcp_proto {
-        if tcp_proto.enabled {
-            let addr = format!("{}:{}", tcp_proto.host, tcp_proto.port);
-            let addr = SocketAddr::from_str(&addr).map_err(|e| Error::Config(e.to_string()))?;
-
-            let proto_handle = tokio::spawn(async move {
-                match start_tcp_proto_server(addr).await {
-                    Ok(_) => info!("TCP protobuf server started successfully"),
-                    Err(e) => {
-                        error!("Failed to start TCP protobuf server: {}", e);
-                        std::process::exit(1);
-                    }
-                }
-            });
-
-            handles.push(proto_handle);
-        }
+    if let Some(sync_handle) = sync_handle {
+        handlers.push(sync_handle);
     }
 
-    Ok(handles)
+    Ok(handlers)
 }
 
 /// 启动指标监控
@@ -160,7 +136,7 @@ async fn start_metrics_collector(opts: &Options) -> Result<(), Error> {
 /// # 错误
 /// 如果Redis连接失败，返回错误
 async fn init_playback_service(options: &Options) -> Result<(), Error> {
-    let mut service = PLAYBACK_SERVICE.lock().await;
+    let mut service = PLAYBACK_SERVICE.write().await;
     if service.is_none() {
         let redis_options = &options.redis;
         let redis_url = redis_options.url.clone();

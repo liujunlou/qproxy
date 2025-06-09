@@ -93,7 +93,7 @@ where
                     Ok(n) => {
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // 写入缓存
-                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                        let playback_service = PLAYBACK_SERVICE.read().await;
                         if let Some(playback_service) = playback_service.as_ref() {
                             playback_service.add_record(record).await?;
                         } else {
@@ -172,7 +172,7 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                     Ok(n) => {
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // 写入缓存
-                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                        let playback_service = PLAYBACK_SERVICE.read().await;
                         if let Some(playback_service) = playback_service.as_ref() {
                             playback_service.add_record(record).await?;
                         } else {

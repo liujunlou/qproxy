@@ -79,7 +79,7 @@ async fn handle_request(
     // 处理同步请求
     match req.uri().path() {
         "/sync" => {
-            let playback_service = PLAYBACK_SERVICE.lock().await;
+            let playback_service = PLAYBACK_SERVICE.read().await;
             if let Some(playback_service) = playback_service.as_ref() {
                 match req.method() {
                     // 获取需要同步的记录

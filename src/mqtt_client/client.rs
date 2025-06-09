@@ -266,7 +266,7 @@ impl MqttClient {
                                 match options.mode {
                                     ProxyMode::Record => {
                                         // 1. 先存储到 Redis
-                                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                                        let playback_service = PLAYBACK_SERVICE.read().await;
                                         if let Some(playback_service) = playback_service.as_ref() {
                                             if let Err(err) =
                                                 playback_service.add_record(record.clone()).await
@@ -365,7 +365,7 @@ impl MqttClient {
                                 match options.mode {
                                     ProxyMode::Record => {
                                         // 1. 先存储到 Redis
-                                        let playback_service = PLAYBACK_SERVICE.lock().await;
+                                        let playback_service = PLAYBACK_SERVICE.read().await;
                                         if let Some(playback_service) = playback_service.as_ref() {
                                             if let Err(err) =
                                                 playback_service.add_record(record.clone()).await

@@ -1,8 +1,5 @@
 use crate::{
-    errors::Error,
-    get_shutdown_rx,
-    model::{Protocol, TrafficRecord},
-    SERVICE_REGISTRY,
+    client::grpc_client::GrpcClient, errors::Error, get_shutdown_rx, model::{Protocol, TrafficRecord}, SERVICE_REGISTRY
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -13,6 +10,7 @@ use hyper_util::{
     rt::TokioExecutor,
 };
 use redis::{aio::ConnectionManager, AsyncCommands};
+use route::RouteMessage;
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, sync::Arc};
@@ -23,6 +21,11 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::RwLock,
 };
+// 引入生成的 proto 代码
+pub mod route {
+    include!(concat!(env!("OUT_DIR"), "/route.rs"));
+}
+
 use tracing::{error, info, warn};
 
 const CHECKPOINT_KEY_PREFIX: &str = "qproxy:checkpoint:";
@@ -572,6 +575,51 @@ impl PlaybackService {
                                     }
                                 }
                             }
+                            Protocol::GRPC => {
+                                // GRPC 协议回放
+                                let mut client = match GrpcClient::new(&addr).await {
+                                    Ok(client) => client,
+                                    Err(e) => {
+                                        warn!("Failed to create GRPC client: {}", e);
+                                        return Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(Full::new(Bytes::from("Failed to create GRPC client")))
+                                            .unwrap();
+                                    }
+                                };
+                                // 反序列化RouteMessage
+                                let route_message = match prost::Message::decode(&mut &record.request.body[..]) {
+                                    Ok(route_message) => route_message,
+                                    Err(e) => {
+                                        warn!("Failed to decode RouteMessage: {}", e);
+                                        return Response::builder()
+                                            .status(StatusCode::BAD_REQUEST)
+                                            .body(Full::new(Bytes::from("Failed to decode RouteMessage")))
+                                            .unwrap();
+                                    }
+                                };
+                                let request = tonic::Request::new(route_message);
+                                // 通过grpc回放流量，并返回响应
+                                match client.call(request).await {
+                                    Ok(response) => {
+                                        if response.get_ref().status_code == 200 {
+                                            return Response::new(Full::new(Bytes::from(response.get_ref().payload.clone())));
+                                        } else {
+                                            return Response::builder()
+                                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                                .body(Full::new(Bytes::from("Failed to send GRPC request")))
+                                                .unwrap();
+                                        }
+                                    }
+                                    Err(e) => {
+                                        warn!("Failed to send GRPC request: {}", e);
+                                        return Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(Full::new(Bytes::from("Failed to send GRPC request")))
+                                            .unwrap();
+                                    }
+                                };
+                            }
                             Protocol::HTTP | Protocol::HTTPS => {
                                 // HTTP/HTTPS 协议回放
                                 let scheme = if record.protocol == Protocol::HTTPS {
@@ -815,6 +863,10 @@ impl PlaybackService {
                                     "Failed to connect to".to_string(),
                                 ));
                             }
+                        }
+                        Protocol::GRPC => {
+                            // TODO 这里完成 MQTT connect和流量回放，复用连接
+                            return Ok(vec![]);
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
                             let scheme = if record.protocol == Protocol::HTTPS {

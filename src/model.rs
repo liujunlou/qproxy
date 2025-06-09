@@ -19,6 +19,7 @@ pub enum Protocol {
     HTTP,
     HTTPS,
     TCP,
+    GRPC,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -79,6 +80,31 @@ impl TrafficRecord {
             protocol: Protocol::TCP,
             // TODO 需要根据具体的消息类型来确定
             codec: Some(MessageType::Publish),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+            request: RequestData {
+                method: None,
+                service_name: Some(service_name.to_string()),
+                params: None,
+                headers: None,
+                body: request_data,
+            },
+            response: ResponseData {
+                status: None,
+                headers: None,
+                body: response_data,
+            },
+        }
+    }
+
+    pub fn new_grpc(service_name: &str, request_data: Vec<u8>, response_data: Vec<u8>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            peer_id: service_name.to_string(),
+            protocol: Protocol::GRPC,
+            codec: None,
             timestamp: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

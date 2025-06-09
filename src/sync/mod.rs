@@ -40,7 +40,7 @@ impl SyncService {
 
         // 异步自动回放
         tokio::spawn(async move {
-            let playback_service = PLAYBACK_SERVICE.lock().await;
+            let playback_service = PLAYBACK_SERVICE.read().await;
             if let Some(playback_service) = playback_service.as_ref() {
                 playback_service.auto_playback().await;
             }
@@ -81,7 +81,7 @@ impl SyncService {
             }
             let peer = peer.clone();
 
-            let playback_service = PLAYBACK_SERVICE.lock().await;
+            let playback_service = PLAYBACK_SERVICE.read().await;
             // 尝试获取锁, 如果获取失败，则跳过同步
             if !playback_service
                 .as_ref()

@@ -31,6 +31,12 @@ pub enum Error {
     #[error("Request error: {0}")]
     Request2(#[from] hyper_util::client::legacy::Error),
 
+    #[error("GRPC error: {0}")]
+    Grpc(#[from] tonic::transport::Error),
+
+    #[error("GRPC status error: {0}")]
+    GrpcStatus(String),
+
     // redis错误
     #[error("Redis error: {0}")]
     Redis(#[from] redis::RedisError),
