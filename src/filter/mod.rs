@@ -14,7 +14,9 @@ pub struct FilterChain {
 
 impl FilterChain {
     pub fn new() -> Self {
-        Self { filters: Vec::new() }
+        Self {
+            filters: Vec::new(),
+        }
     }
 
     pub fn add_filter(&mut self, filter: Box<dyn Filter>) {

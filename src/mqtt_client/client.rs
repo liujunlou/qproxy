@@ -1,13 +1,14 @@
 use crate::{
-    PLAYBACK_SERVICE,
     options::{Options, ProxyMode},
     proxy::tcp::handle_tls_proxy,
+    PLAYBACK_SERVICE,
 };
 
 use super::codec::{MqttCodec, MqttMessage, QoS, QueryMessage};
 use anyhow::{anyhow, Result};
 use bytes::{Bytes, BytesMut};
 use futures::{FutureExt, SinkExt, StreamExt};
+use std::io::Cursor;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
@@ -19,10 +20,9 @@ use tokio::{
     sync::mpsc,
     time,
 };
+use tokio_rustls::{TlsAcceptor, TlsStream};
 use tokio_util::codec::Framed;
 use tracing::{debug, error, info, warn};
-use tokio_rustls::{TlsStream, TlsAcceptor};
-use std::io::Cursor;
 
 // A struct to track published messages waiting for acknowledgment
 struct OutgoingMessage {
@@ -149,7 +149,8 @@ impl MqttClient {
             device_id: self.client_id.clone(),
             clean_session: self.clean_session,
             keep_alive: self.keep_alive as u32,
-            credentials: if let (Some(username), Some(password)) = (&self.username, &self.password) {
+            credentials: if let (Some(username), Some(password)) = (&self.username, &self.password)
+            {
                 Some(super::codec::Credentials {
                     app_key: username.clone(),
                     token: Some(password.clone()),
@@ -204,21 +205,20 @@ impl MqttClient {
                 match futures::future::select(ping_timer, broker_message).await {
                     futures::future::Either::Left((_, _)) => {
                         // Send ping
-                        let ping = MqttMessage::PingReq(super::codec::PingReqMessage {
-                            properties: None,
-                        });
+                        let ping =
+                            MqttMessage::PingReq(super::codec::PingReqMessage { properties: None });
 
                         if let Err(err) = framed.send(ping).await {
                             error!("Failed to send ping: {}", err);
                             break;
                         }
-                    },
+                    }
                     futures::future::Either::Right((Some(message), _)) => {
                         if let Err(err) = framed.send(message).await {
                             error!("Failed to send message: {}", err);
                             break;
                         }
-                    },
+                    }
                     futures::future::Either::Right((None, _)) => {
                         break;
                     }
@@ -239,11 +239,12 @@ impl MqttClient {
                                 // Handle incoming publish
                                 if publish.qos != QoS::AtMostOnce {
                                     if let Some(packet_id) = publish.message_id {
-                                        let puback = MqttMessage::PubAck(super::codec::PubAckMessage {
-                                            message_id: packet_id,
-                                            reason_code: Some(0),
-                                            properties: None,
-                                        });
+                                        let puback =
+                                            MqttMessage::PubAck(super::codec::PubAckMessage {
+                                                message_id: packet_id,
+                                                reason_code: Some(0),
+                                                properties: None,
+                                            });
 
                                         if let Err(err) = framed.send(puback).await {
                                             error!("Failed to send PUBACK: {}", err);
@@ -253,12 +254,13 @@ impl MqttClient {
 
                                 // Convert to TrafficRecord
                                 let topic = publish.topic.clone();
-                                let publish_bytes = serde_json::to_vec(&publish).unwrap_or_default();
+                                let publish_bytes =
+                                    serde_json::to_vec(&publish).unwrap_or_default();
 
                                 let record = crate::model::TrafficRecord::new_tcp(
                                     &topic,
                                     publish_bytes,
-                                    vec![]
+                                    vec![],
                                 );
 
                                 match options.mode {
@@ -266,10 +268,18 @@ impl MqttClient {
                                         // 1. 先存储到 Redis
                                         let playback_service = PLAYBACK_SERVICE.lock().await;
                                         if let Some(playback_service) = playback_service.as_ref() {
-                                            if let Err(err) = playback_service.add_record(record.clone()).await {
-                                                error!("Failed to store MQTT message to Redis: {}", err);
+                                            if let Err(err) =
+                                                playback_service.add_record(record.clone()).await
+                                            {
+                                                error!(
+                                                    "Failed to store MQTT message to Redis: {}",
+                                                    err
+                                                );
                                             } else {
-                                                debug!("Stored MQTT message from topic '{}' to Redis", topic);
+                                                debug!(
+                                                    "Stored MQTT message from topic '{}' to Redis",
+                                                    topic
+                                                );
                                             }
 
                                             // 2. 然后触发本地回放
@@ -288,15 +298,21 @@ impl MqttClient {
 
                                         // 创建 TLS 流
                                         if let Some(tls) = &options.tcp.tls {
-                                            let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                            let tls_config =
+                                                crate::load_tls(&tls.tls_cert, &tls.tls_key);
                                             let acceptor = TlsAcceptor::from(tls_config);
-                                            
+
                                             // 直接调用 handle_tls_proxy
                                             let options = options.clone();
                                             tokio::spawn(async move {
                                                 match acceptor.accept(stream).await {
                                                     Ok(tls_stream) => {
-                                                        if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                        if let Err(e) = handle_tls_proxy(
+                                                            TlsStream::Server(tls_stream),
+                                                            options,
+                                                        )
+                                                        .await
+                                                        {
                                                             error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
                                                         }
                                                     }
@@ -330,17 +346,20 @@ impl MqttClient {
                                     retain: query.retain,
                                     dup: query.dup,
                                 };
-                                debug!("Received Query for topic: {} with target_id: {:?}",
-                                       query_message.query_type, query_message.device_id);
+                                debug!(
+                                    "Received Query for topic: {} with target_id: {:?}",
+                                    query_message.query_type, query_message.device_id
+                                );
 
                                 // Convert to TrafficRecord
                                 let topic = query_message.query_type.clone();
-                                let query_bytes = serde_json::to_vec(&query_message).unwrap_or_default();
+                                let query_bytes =
+                                    serde_json::to_vec(&query_message).unwrap_or_default();
 
                                 let record = crate::model::TrafficRecord::new_tcp(
                                     &topic,
                                     query_bytes,
-                                    vec![]
+                                    vec![],
                                 );
 
                                 match options.mode {
@@ -348,10 +367,18 @@ impl MqttClient {
                                         // 1. 先存储到 Redis
                                         let playback_service = PLAYBACK_SERVICE.lock().await;
                                         if let Some(playback_service) = playback_service.as_ref() {
-                                            if let Err(err) = playback_service.add_record(record.clone()).await {
-                                                error!("Failed to store Query message to Redis: {}", err);
+                                            if let Err(err) =
+                                                playback_service.add_record(record.clone()).await
+                                            {
+                                                error!(
+                                                    "Failed to store Query message to Redis: {}",
+                                                    err
+                                                );
                                             } else {
-                                                debug!("Stored Query message from topic '{}' to Redis", topic);
+                                                debug!(
+                                                    "Stored Query message from topic '{}' to Redis",
+                                                    topic
+                                                );
                                             }
 
                                             // 2. 然后触发本地回放
@@ -370,15 +397,21 @@ impl MqttClient {
 
                                         // 创建 TLS 流
                                         if let Some(tls) = &options.tcp.tls {
-                                            let tls_config = crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                            let tls_config =
+                                                crate::load_tls(&tls.tls_cert, &tls.tls_key);
                                             let acceptor = TlsAcceptor::from(tls_config);
-                                            
+
                                             // 直接调用 handle_tls_proxy
                                             let options = options.clone();
                                             tokio::spawn(async move {
                                                 match acceptor.accept(stream).await {
                                                     Ok(tls_stream) => {
-                                                        if let Err(e) = handle_tls_proxy(TlsStream::Server(tls_stream), options).await {
+                                                        if let Err(e) = handle_tls_proxy(
+                                                            TlsStream::Server(tls_stream),
+                                                            options,
+                                                        )
+                                                        .await
+                                                        {
                                                             error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
                                                         }
                                                     }
@@ -395,13 +428,14 @@ impl MqttClient {
 
                                 // Reply with QueryAck
                                 if let Some(message_id) = query.message_id {
-                                    let query_ack = MqttMessage::QueryAck(super::codec::QueryAckMessage {
-                                        query_type: query.query_type.clone(),
-                                        status: 0,
-                                        message_id: Some(message_id),
-                                        reason_code: Some(0),
-                                        properties: None,
-                                    });
+                                    let query_ack =
+                                        MqttMessage::QueryAck(super::codec::QueryAckMessage {
+                                            query_type: query.query_type.clone(),
+                                            status: 0,
+                                            message_id: Some(message_id),
+                                            reason_code: Some(0),
+                                            properties: None,
+                                        });
 
                                     if let Err(err) = framed.send(query_ack).await {
                                         error!("Failed to send QueryAck: {}", err);
@@ -416,8 +450,10 @@ impl MqttClient {
                                 }
                             }
                             MqttMessage::QueryAck(ref ack) => {
-                                debug!("Received QueryAck for message ID: {:?} with status: {}",
-                                       ack.message_id, ack.status);
+                                debug!(
+                                    "Received QueryAck for message ID: {:?} with status: {}",
+                                    ack.message_id, ack.status
+                                );
 
                                 // Forward to user
                                 if let Err(err) = tx_from_broker.send(Ok(message.clone())).await {
@@ -490,8 +526,10 @@ impl MqttClient {
                                 ));
                             } else {
                                 to_remove.push(*id);
-                                warn!("Message to topic {} with id {} timed out after {} retries",
-                                     msg.topic, id, max_retries);
+                                warn!(
+                                    "Message to topic {} with id {} timed out after {} retries",
+                                    msg.topic, id, max_retries
+                                );
                             }
                         }
                     }
@@ -524,23 +562,27 @@ impl MqttClient {
 
     pub async fn publish(&mut self, topic: String, payload: Bytes, qos: QoS) -> Result<()> {
         let mut packet_id = 0;
-        
+
         if qos != QoS::AtMostOnce {
             let mut packet_id_guard = self.packet_id.lock().unwrap();
             *packet_id_guard = packet_id_guard.wrapping_add(1);
             packet_id = *packet_id_guard;
         }
-        
+
         let publish = MqttMessage::Publish(super::codec::PublishMessage {
             topic: topic.clone(),
             payload: String::from_utf8_lossy(&payload).to_string(),
-            message_id: if qos != QoS::AtMostOnce { Some(packet_id) } else { None },
+            message_id: if qos != QoS::AtMostOnce {
+                Some(packet_id)
+            } else {
+                None
+            },
             qos,
             retain: false,
             dup: false,
             properties: None,
         });
-        
+
         if let Some(connection) = &self.connection {
             if qos != QoS::AtMostOnce {
                 let now = std::time::SystemTime::now()
@@ -557,7 +599,10 @@ impl MqttClient {
                     payload,
                 };
 
-                self.outgoing_messages.lock().unwrap().insert(packet_id, outgoing_msg);
+                self.outgoing_messages
+                    .lock()
+                    .unwrap()
+                    .insert(packet_id, outgoing_msg);
             }
 
             connection.tx_to_broker.send(publish).await?;
@@ -567,7 +612,12 @@ impl MqttClient {
         }
     }
 
-    pub async fn query(&mut self, topic: String, payload: Bytes, target_id: Option<String>) -> Result<u16> {
+    pub async fn query(
+        &mut self,
+        topic: String,
+        payload: Bytes,
+        target_id: Option<String>,
+    ) -> Result<u16> {
         if self.connection.is_none() {
             return Err(anyhow!("Not connected to broker"));
         }
@@ -613,7 +663,10 @@ impl MqttClient {
             return Err(anyhow!("Failed to send Query: {}", err));
         }
 
-        debug!("Sent Query message to topic: {} with ID: {}", topic, packet_id);
+        debug!(
+            "Sent Query message to topic: {} with ID: {}",
+            topic, packet_id
+        );
         Ok(packet_id)
     }
 
@@ -639,4 +692,4 @@ impl MqttClient {
             Err(anyhow!("Not connected"))
         }
     }
-} 
+}

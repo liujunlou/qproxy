@@ -89,7 +89,7 @@ pub enum ServiceDiscoveryProvider {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ServiceDiscoveryConfig {
     pub static_services: Option<Vec<ServiceConfig>>,
-    pub zookeeper: Option<ZookeeperConfig>, 
+    pub zookeeper: Option<ZookeeperConfig>,
     pub kubernetes: Option<KubernetesConfig>,
 }
 
@@ -160,12 +160,12 @@ pub struct TcpProtoOptions {
 impl Options {
     // 加载配置
     pub fn new() -> Result<Self, Error> {
-        let config_path = std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.json".to_string());
+        let config_path =
+            std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.json".to_string());
         let config_str = fs::read_to_string(config_path)?;
-        serde_json::from_str(&config_str)
-            .map_err(|e|Error::Config(e.to_string()))
+        serde_json::from_str(&config_str).map_err(|e| Error::Config(e.to_string()))
     }
-} 
+}
 
 impl Default for Options {
     fn default() -> Self {

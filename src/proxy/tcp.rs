@@ -1,14 +1,18 @@
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 use tracing::{error, info};
-use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::{
-    errors::Error, get_shutdown_rx, load_tls, model::TrafficRecord, options::{Options, ProxyMode}, PLAYBACK_SERVICE
+    errors::Error,
+    get_shutdown_rx, load_tls,
+    model::TrafficRecord,
+    options::{Options, ProxyMode},
+    PLAYBACK_SERVICE,
 };
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
@@ -16,9 +20,9 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let addr = SocketAddr::from_str(&addr).expect("invalid socket address");
     let listener = TcpListener::bind(addr).await?;
     info!("TCP proxy server listening on {}", addr);
-    
+
     let mut shutdown_rx = get_shutdown_rx().await;
-    
+
     loop {
         tokio::select! {
             accept_result = listener.accept() => {
@@ -65,12 +69,15 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
             }
         }
     }
-    
+
     info!("TCP proxy server shutdown complete");
     Ok(())
 }
 
-pub async fn handle_tls_proxy<S>(inbound: tokio_rustls::TlsStream<S>, options: Arc<Options>) -> Result<(), Error>
+pub async fn handle_tls_proxy<S>(
+    inbound: tokio_rustls::TlsStream<S>,
+    options: Arc<Options>,
+) -> Result<(), Error>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -112,19 +119,18 @@ where
                         let downstream_addr = &options.tcp.downstream;
                         if downstream_addr.is_empty() {
                             error!("No downstream address configured");
-                            return Err(Error::Config("No downstream address configured".to_string()));
+                            return Err(Error::Config(
+                                "No downstream address configured".to_string(),
+                            ));
                         }
-                        
+
                         // 选择第一个下游地址，TODO 这里需要根据流量来源选择下游地址
                         let addr = &downstream_addr[0];
 
                         // 2. 转HTTP POST /sync请求
                         let client = reqwest::Client::new();
                         let url = format!("http://{}/sync", addr);
-                        let response = client.post(&url)
-                            .json(&record)
-                            .send()
-                            .await?;
+                        let response = client.post(&url).json(&record).send().await?;
 
                         // 4. 接收下游返回的响应 TrafficRecord，解析成原始流量
                         let record_bytes = response.bytes().await?;
@@ -148,7 +154,7 @@ where
             }
         }
     }
-    
+
     Err(Error::Config("unknown proxy mode".to_string()))
 }
 
@@ -193,19 +199,18 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                         let downstream_addr = &options.tcp.downstream;
                         if downstream_addr.is_empty() {
                             error!("No downstream address configured");
-                            return Err(Error::Config("No downstream address configured".to_string()));
+                            return Err(Error::Config(
+                                "No downstream address configured".to_string(),
+                            ));
                         }
-                        
+
                         // 选择第一个下游地址，TODO 这里需要根据流量来源选择下游地址
                         let addr = &downstream_addr[0];
 
                         // 2. 转HTTP POST /sync请求
                         let client = reqwest::Client::new();
                         let url = format!("http://{}/sync", addr);
-                        let response = client.post(&url)
-                            .json(&record)
-                            .send()
-                            .await?;
+                        let response = client.post(&url).json(&record).send().await?;
 
                         // 4. 接收下游返回的响应 TrafficRecord，解析成原始流量
                         let record_bytes = response.bytes().await?;
@@ -231,4 +236,4 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
     }
 
     Err(Error::Config("unknown proxy mode".to_string()))
-} 
+}

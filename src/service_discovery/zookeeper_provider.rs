@@ -31,29 +31,36 @@ impl ZookeeperServiceDiscovery {
         let connect_string = hosts.join(",");
         let zk = ZooKeeper::connect(&connect_string, Duration::from_millis(timeout), ZkWatcher)
             .await
-            .map_err(|e| Error::ServiceDiscovery(format!("Failed to connect to ZooKeeper: {}", e)))?;
-        
-        Ok(Self {
-            zk,
-            base_path,
-        })
+            .map_err(|e| {
+                Error::ServiceDiscovery(format!("Failed to connect to ZooKeeper: {}", e))
+            })?;
+
+        Ok(Self { zk, base_path })
     }
 
     async fn ensure_path(&self, path: &str) -> Result<(), Error> {
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
         let mut current = String::new();
-        
+
         for part in parts {
             current.push('/');
             current.push_str(part);
-            
+
             if let Err(e) = self.zk.exists(&current, false).await {
-                self.zk.create(&current, vec![], zookeeper_async::Acl::open_unsafe().clone(), zookeeper_async::CreateMode::Persistent)
+                self.zk
+                    .create(
+                        &current,
+                        vec![],
+                        zookeeper_async::Acl::open_unsafe().clone(),
+                        zookeeper_async::CreateMode::Persistent,
+                    )
                     .await
-                    .map_err(|e| Error::ServiceDiscovery(format!("Failed to create ZK path: {}", e)))?;
+                    .map_err(|e| {
+                        Error::ServiceDiscovery(format!("Failed to create ZK path: {}", e))
+                    })?;
             }
         }
-        
+
         Ok(())
     }
 
@@ -79,26 +86,30 @@ impl ServiceDiscoveryBackend for ZookeeperServiceDiscovery {
             metadata: instance.metadata.clone(),
         };
 
-        let json = serde_json::to_vec(&data)
-            .map_err(|e| Error::ServiceDiscovery(format!("Failed to serialize service data: {}", e)))?;
+        let json = serde_json::to_vec(&data).map_err(|e| {
+            Error::ServiceDiscovery(format!("Failed to serialize service data: {}", e))
+        })?;
 
-        self.zk.create(
-            &format!("{}/node", path),
-            json,
-            zookeeper_async::Acl::open_unsafe().clone(),
-            zookeeper_async::CreateMode::EphemeralSequential,
-        )
-        .await
-        .map_err(|e| Error::ServiceDiscovery(format!("Failed to register service: {}", e)))?;
+        self.zk
+            .create(
+                &format!("{}/node", path),
+                json,
+                zookeeper_async::Acl::open_unsafe().clone(),
+                zookeeper_async::CreateMode::EphemeralSequential,
+            )
+            .await
+            .map_err(|e| Error::ServiceDiscovery(format!("Failed to register service: {}", e)))?;
 
         Ok(())
     }
 
     async fn deregister(&self, name: &str) -> Result<(), Error> {
         let path = self.get_service_path(name);
-        
+
         // 获取所有子节点
-        let children = self.zk.get_children(&path, false)
+        let children = self
+            .zk
+            .get_children(&path, false)
             .await
             .map_err(|e| Error::ServiceDiscovery(format!("Failed to get children: {}", e)))?;
 
@@ -111,7 +122,8 @@ impl ServiceDiscoveryBackend for ZookeeperServiceDiscovery {
         }
 
         // 删除服务节点
-        self.zk.delete(&path, None)
+        self.zk
+            .delete(&path, None)
             .await
             .map_err(|e| Error::ServiceDiscovery(format!("Failed to deregister service: {}", e)))?;
 
@@ -120,7 +132,7 @@ impl ServiceDiscoveryBackend for ZookeeperServiceDiscovery {
 
     async fn get_instances(&self, name: &str) -> Result<Vec<ServiceInstance>, Error> {
         let path = self.get_service_path(name);
-        
+
         let children = match self.zk.get_children(&path, false).await {
             Ok(c) => c,
             Err(_) => return Ok(vec![]),
@@ -145,7 +157,9 @@ impl ServiceDiscoveryBackend for ZookeeperServiceDiscovery {
     }
 
     async fn get_all_services(&self) -> Result<Vec<ServiceInstance>, Error> {
-        let services = self.zk.get_children(&self.base_path, false)
+        let services = self
+            .zk
+            .get_children(&self.base_path, false)
             .await
             .map_err(|e| Error::ServiceDiscovery(format!("Failed to get services: {}", e)))?;
 
@@ -166,7 +180,7 @@ mod tests {
     fn create_test_instance() -> ServiceInstance {
         let mut metadata = HashMap::new();
         metadata.insert("version".to_string(), "1.0".to_string());
-        
+
         ServiceInstance {
             name: "test-service".to_string(),
             host: "localhost".to_string(),
@@ -191,10 +205,10 @@ mod tests {
             port: instance.port,
             metadata: instance.metadata.clone(),
         };
-        
+
         let json = serde_json::to_vec(&data).unwrap();
         let parsed: ServiceData = serde_json::from_slice(&json).unwrap();
-        
+
         assert_eq!(parsed.name, "test-service");
         assert_eq!(parsed.host, "localhost");
         assert_eq!(parsed.port, 8080);
@@ -207,4 +221,4 @@ mod tests {
         let result = serde_json::from_slice::<ServiceData>(invalid_data);
         assert!(result.is_err());
     }
-} 
+}

@@ -1,20 +1,17 @@
-use std::net::SocketAddr;
-use tokio::sync::mpsc;
-use tokio::net::TcpListener;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tracing::{info, error, warn};
-use std::sync::Arc;
 use prost::Message;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::mpsc;
+use tracing::{error, info, warn};
 
 // 引入生成的 proto 代码
 pub mod route {
     include!(concat!(env!("OUT_DIR"), "/route.rs"));
 }
 
-use route::{
-    RouteMessage as ProtoRouteMessage,
-    RouteResponse as ProtoRouteResponse,
-};
+use route::{RouteMessage as ProtoRouteMessage, RouteResponse as ProtoRouteResponse};
 
 // 定义 protobuf 消息和服务
 #[derive(Debug, Clone)]
@@ -154,7 +151,7 @@ impl TcpProtoServer {
                     // 编码并发送响应
                     let proto_response: ProtoRouteResponse = response.into();
                     let response_buf = proto_response.encode_to_vec();
-                    
+
                     // 发送响应长度（4字节）
                     if let Err(e) = socket.write_u32(response_buf.len() as u32).await {
                         error!("Failed to write response length: {}", e);
@@ -189,7 +186,7 @@ impl TcpProtoServer {
         info!("TCP protobuf server is starting to listen on {}", self.addr);
 
         let mut shutdown_rx = crate::get_shutdown_rx().await;
-        
+
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {
@@ -219,16 +216,18 @@ impl TcpProtoServer {
 }
 
 // 启动 TCP protobuf 服务器的辅助函数
-pub async fn start_tcp_proto_server(addr: SocketAddr) -> Result<mpsc::Receiver<RouteMessage>, Box<dyn std::error::Error>> {
+pub async fn start_tcp_proto_server(
+    addr: SocketAddr,
+) -> Result<mpsc::Receiver<RouteMessage>, Box<dyn std::error::Error>> {
     let (tx, rx) = mpsc::channel(100);
     let server = TcpProtoServer::new(addr, tx);
-    
+
     info!("Attempting to start TCP protobuf server on {}", addr);
-    
+
     // 先尝试绑定端口，确保端口可用
     let listener = tokio::net::TcpListener::bind(addr).await?;
     drop(listener); // 释放端口，让服务器使用
-    
+
     // 启动服务器
     let _server_handle = tokio::spawn(async move {
         match server.run().await {
@@ -247,25 +246,36 @@ pub async fn start_tcp_proto_server(addr: SocketAddr) -> Result<mpsc::Receiver<R
 
     while retry_count < max_retries && !connected {
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-        
+
         match tokio::net::TcpStream::connect(addr).await {
             Ok(_) => {
                 connected = true;
                 info!("Successfully connected to TCP protobuf server at {}", addr);
             }
             Err(e) => {
-                warn!("Attempt {}: Failed to connect to TCP protobuf server at {}: {}", 
-                    retry_count + 1, addr, e);
+                warn!(
+                    "Attempt {}: Failed to connect to TCP protobuf server at {}: {}",
+                    retry_count + 1,
+                    addr,
+                    e
+                );
                 retry_count += 1;
             }
         }
     }
 
     if !connected {
-        error!("Failed to start TCP protobuf server after {} attempts", max_retries);
-        return Err(format!("Failed to start TCP protobuf server: Could not connect to {}", addr).into());
+        error!(
+            "Failed to start TCP protobuf server after {} attempts",
+            max_retries
+        );
+        return Err(format!(
+            "Failed to start TCP protobuf server: Could not connect to {}",
+            addr
+        )
+        .into());
     }
 
     info!("TCP protobuf server is running and listening on {}", addr);
     Ok(rx)
-} 
+}

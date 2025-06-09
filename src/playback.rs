@@ -1,9 +1,16 @@
-use crate::{errors::Error, model::{Protocol, TrafficRecord}, service_discovery::SERVICE_REGISTRY};
+use crate::{
+    errors::Error,
+    model::{Protocol, TrafficRecord},
+    service_discovery::SERVICE_REGISTRY,
+};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use hyper_util::{client::legacy::{Builder, Client}, rt::TokioExecutor};
+use hyper_util::{
+    client::legacy::{Builder, Client},
+    rt::TokioExecutor,
+};
 use redis::{aio::ConnectionManager, AsyncCommands};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,7 +58,7 @@ pub enum SyncStatus {
 }
 
 /// 流量回放服务
-/// 
+///
 /// 该服务负责:
 /// 1. 存储和管理流量记录
 /// 2. 查找匹配的流量记录
@@ -123,10 +130,7 @@ impl PlaybackService {
     pub async fn release_sync_lock(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
         let key = self.get_lock_key(peer_id, shard_id);
         let mut conn = self.redis_pool.as_ref().clone();
-        redis::cmd("DEL")
-            .arg(&key)
-            .query_async(&mut conn)
-            .await?;
+        redis::cmd("DEL").arg(&key).query_async(&mut conn).await?;
         Ok(())
     }
 
@@ -147,7 +151,10 @@ impl PlaybackService {
             }
         } else {
             // 如果旧的checkpoint不存在，则直接更新
-            info!("derict update checkpoint: {}_{}", checkpoint.peer_id, checkpoint.shard_id);
+            info!(
+                "derict update checkpoint: {}_{}",
+                checkpoint.peer_id, checkpoint.shard_id
+            );
         };
 
         let json = serde_json::to_string(&new_checkpoint).unwrap();
@@ -157,7 +164,11 @@ impl PlaybackService {
     }
 
     /// 获取同步位点
-    pub async fn get_checkpoint(&self, peer_id: &str, shard_id: &str) -> Result<Option<CheckpointInfo>, Error> {
+    pub async fn get_checkpoint(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+    ) -> Result<Option<CheckpointInfo>, Error> {
         let key = self.get_checkpoint_key(peer_id, shard_id);
         // 拉取同步记录
         let mut conn = self.redis_pool.as_ref().clone();
@@ -168,7 +179,7 @@ impl PlaybackService {
                 return Err(Error::Redis(e));
             }
         };
-        
+
         match json {
             Some(j) => {
                 match serde_json::from_str::<CheckpointInfo>(&j) {
@@ -179,14 +190,14 @@ impl PlaybackService {
                             // 如果同步状态为InProgress，说明有节点正在同步数据，则跳过
                             Ok(None)
                         }
-                    },
+                    }
                     Err(e) => {
                         error!("get checkpoint failed: {:?}", e);
                         Err(Error::Json(e))
                     }
                 }
-            },
-            None => Ok(None)
+            }
+            None => Ok(None),
         }
     }
 
@@ -198,7 +209,9 @@ impl PlaybackService {
         }
 
         // 获取或创建checkpoint
-        let mut checkpoint = self.get_checkpoint(peer_id, shard_id).await?
+        let mut checkpoint = self
+            .get_checkpoint(peer_id, shard_id)
+            .await?
             .unwrap_or_else(|| CheckpointInfo {
                 peer_id: peer_id.to_string(),
                 shard_id: shard_id.to_string(),
@@ -217,11 +230,20 @@ impl PlaybackService {
     }
 
     /// 完成同步流程
-    pub async fn complete_sync(&self, peer_id: &str, shard_id: &str, success: bool, error_msg: Option<String>) -> Result<(), Error> {
+    pub async fn complete_sync(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+        success: bool,
+        error_msg: Option<String>,
+    ) -> Result<(), Error> {
         let mut checkpoint = match self.get_checkpoint(peer_id, shard_id).await? {
             Some(cp) => cp,
             None => {
-                error!("No checkpoint found for peer: {}, shard: {}", peer_id, shard_id);
+                error!(
+                    "No checkpoint found for peer: {}, shard: {}",
+                    peer_id, shard_id
+                );
                 return Ok(());
             }
         };
@@ -247,14 +269,18 @@ impl PlaybackService {
     }
 
     /// 获取需要同步的记录，从checkpoint开始（如果checkpoint不存在，则从0开始），到之后的5分钟的记录
-    /// 
+    ///
     /// # 参数
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
-    /// 
+    ///
     /// # 返回值
     /// 返回需要同步的记录列表
-    pub async fn get_records_for_sync(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, Error> {
+    pub async fn get_records_for_sync(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+    ) -> Result<Vec<TrafficRecord>, Error> {
         let cp = if let Some(cp) = self.get_checkpoint(peer_id, shard_id).await? {
             cp
         } else {
@@ -267,11 +293,13 @@ impl PlaybackService {
 
         let since = UNIX_EPOCH + Duration::from_millis(cp.last_sync_time as u64);
         let key = self.get_traffic_key(peer_id, shard_id);
-        
+
         let mut conn = self.redis_pool.as_ref().clone();
         let mut min_score = since.duration_since(UNIX_EPOCH)?.as_millis() as u64;
-        let mut max_score = (since + Duration::from_secs(300)).duration_since(UNIX_EPOCH)?.as_millis() as u64;
-        
+        let mut max_score = (since + Duration::from_secs(300))
+            .duration_since(UNIX_EPOCH)?
+            .as_millis() as u64;
+
         let start_time = SystemTime::now();
         let mut records: Vec<String> = Vec::new();
         let max_records = 1000;
@@ -279,7 +307,16 @@ impl PlaybackService {
 
         loop {
             // 获取指定范围内的记录，并限制数量，避免数据量太大
-            match conn.zrangebyscore_limit::<_, _, _, Vec<String>>(&key, min_score, max_score, 0, max_records as isize).await {
+            match conn
+                .zrangebyscore_limit::<_, _, _, Vec<String>>(
+                    &key,
+                    min_score,
+                    max_score,
+                    0,
+                    max_records as isize,
+                )
+                .await
+            {
                 Ok(tmp) => {
                     records.extend(tmp.into_iter().map(|x| x.to_string()));
                     // 如果已经达到最大记录数，立即退出
@@ -315,29 +352,31 @@ impl PlaybackService {
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
-                if record.timestamp >= since.duration_since(UNIX_EPOCH)?.as_millis() as u128 && record.id != cp.last_record_id {
+                if record.timestamp >= since.duration_since(UNIX_EPOCH)?.as_millis() as u128
+                    && record.id != cp.last_record_id
+                {
                     result.push(record);
                 }
             }
         }
-        
+
         // 按时间戳排序
         result.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         Ok(result)
     }
 
     /// 添加新的流量记录
-    /// 
+    ///
     /// # 参数
     /// * `record` - 要添加的流量记录
     pub async fn add_record(&self, record: TrafficRecord) -> Result<(), Error> {
         let key = self.get_traffic_key(&record.peer_id, "default");
         let json = serde_json::to_string(&record)?;
         let score = record.timestamp as u64;
-        
+
         let mut conn = self.redis_pool.as_ref().clone();
         conn.zadd(&key, &json, score).await?;
-        
+
         // 触发回放
         self.trigger_replay(&record).await;
         Ok(())
@@ -352,22 +391,27 @@ impl PlaybackService {
     }
 
     /// 查找匹配的流量记录
-    /// 
+    ///
     /// # 参数
     /// * `req` - HTTP 请求
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
-    /// 
+    ///
     /// # 返回值
     /// 返回匹配的流量记录（如果找到）
-    pub async fn find_matching_record<B>(&self, req: &Request<B>, peer_id: &str, shard_id: &str) -> Result<Option<TrafficRecord>, Error>
+    pub async fn find_matching_record<B>(
+        &self,
+        req: &Request<B>,
+        peer_id: &str,
+        shard_id: &str,
+    ) -> Result<Option<TrafficRecord>, Error>
     where
         B: Body,
     {
         let key = self.get_traffic_key(peer_id, shard_id);
         let mut conn = self.redis_pool.as_ref().clone();
         let records: Vec<String> = conn.zrange(&key, 0, -1).await?;
-        
+
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
                 if matches!(record.protocol, Protocol::HTTP | Protocol::HTTPS)
@@ -382,16 +426,16 @@ impl PlaybackService {
     }
 
     /// 回放流量
-    /// 
+    ///
     /// 该方法会:
     /// 1. 查找匹配的流量记录
     /// 2. 根据协议类型选择对应的回放方式
     /// 3. 尝试连接本地服务并回放流量
     /// 4. 如果本地服务不可用，则返回记录的响应
-    /// 
+    ///
     /// # 参数
     /// * `req` - HTTP 请求
-    /// 
+    ///
     /// # 返回值
     /// 返回 HTTP 响应
     pub async fn playback<B>(&self, req: Request<B>) -> Response<Full<Bytes>>
@@ -417,13 +461,21 @@ impl PlaybackService {
                     .status(StatusCode::BAD_REQUEST)
                     .body(Full::new(Bytes::from("Failed to parse request body")))
                     .unwrap();
-            },
+            }
         };
         let req = Request::from_parts(parts, Full::new(body_bytes));
-        if let Ok(Some(record)) = self.find_matching_record(&req, &record.peer_id, "default").await {
+        if let Ok(Some(record)) = self
+            .find_matching_record(&req, &record.peer_id, "default")
+            .await
+        {
             // 尝试查找本地服务
             if let Some(service_name) = record.request.service_name.as_ref() {
-                match SERVICE_REGISTRY.read().await.find_local_service(service_name).await {
+                match SERVICE_REGISTRY
+                    .read()
+                    .await
+                    .find_local_service(service_name)
+                    .await
+                {
                     Ok(Some(service)) => {
                         // 构建本地服务连接地址
                         let addr = format!("{}:{}", service.host, service.port);
@@ -437,18 +489,23 @@ impl PlaybackService {
                                 match TcpStream::connect(&addr).await {
                                     Ok(mut stream) => {
                                         // 发送请求数据到本地服务
-                                        if let Err(e) = stream.write_all(&record.request.body).await {
-                                            warn!("Failed to write request to local service: {}", e);
+                                        if let Err(e) = stream.write_all(&record.request.body).await
+                                        {
+                                            warn!(
+                                                "Failed to write request to local service: {}",
+                                                e
+                                            );
                                         } else {
                                             // 读取本地服务的响应数据
                                             let mut response_data = Vec::new();
                                             let mut buffer = [0u8; 8192];
-                                            
+
                                             // 循环读取响应数据直到 EOF 或错误发生
                                             loop {
                                                 match stream.read(&mut buffer).await {
                                                     Ok(0) => break, // EOF
-                                                    Ok(n) => response_data.extend_from_slice(&buffer[..n]),
+                                                    Ok(n) => response_data
+                                                        .extend_from_slice(&buffer[..n]),
                                                     Err(e) => {
                                                         warn!("Failed to read response from local service: {}", e);
                                                         break;
@@ -459,7 +516,9 @@ impl PlaybackService {
                                             // 如果成功读取到响应数据，则返回
                                             if !response_data.is_empty() {
                                                 info!("Successfully replayed TCP traffic to local service");
-                                                return Response::new(Full::new(Bytes::from(response_data)));
+                                                return Response::new(Full::new(Bytes::from(
+                                                    response_data,
+                                                )));
                                             }
                                         }
                                     }
@@ -470,20 +529,27 @@ impl PlaybackService {
                             }
                             Protocol::HTTP | Protocol::HTTPS => {
                                 // HTTP/HTTPS 协议回放
-                                let scheme = if record.protocol == Protocol::HTTPS { "https" } else { "http" };
-                                let local_url = format!("{}://{}:{}{}", 
+                                let scheme = if record.protocol == Protocol::HTTPS {
+                                    "https"
+                                } else {
+                                    "http"
+                                };
+                                let local_url = format!(
+                                    "{}://{}:{}{}",
                                     scheme,
-                                    service.host, 
+                                    service.host,
                                     service.port,
                                     req.uri().path_and_query().map(|x| x.as_str()).unwrap_or("")
                                 );
 
-                                info!("Replaying HTTP/HTTPS traffic to local service: {}", local_url);
+                                info!(
+                                    "Replaying HTTP/HTTPS traffic to local service: {}",
+                                    local_url
+                                );
 
                                 // 构建并发送 HTTP 请求
-                                let local_req = Request::builder()
-                                    .method(req.method())
-                                    .uri(local_url);
+                                let local_req =
+                                    Request::builder().method(req.method()).uri(local_url);
 
                                 // 添加请求头
                                 let local_req = if let Some(headers) = &record.request.headers {
@@ -497,7 +563,9 @@ impl PlaybackService {
                                 };
 
                                 // 发送请求
-                                match local_req.body(Full::new(Bytes::from(record.request.body.clone()))) {
+                                match local_req
+                                    .body(Full::new(Bytes::from(record.request.body.clone())))
+                                {
                                     Ok(request) => {
                                         let client = Builder::new((*self.executor).clone())
                                             .pool_idle_timeout(std::time::Duration::from_secs(30))
@@ -530,17 +598,22 @@ impl PlaybackService {
                         }
                     }
                     Ok(None) => {
-                        warn!("No local service found for {}, using recorded response", service_name);
+                        warn!(
+                            "No local service found for {}, using recorded response",
+                            service_name
+                        );
                     }
                     Err(e) => {
-                        warn!("Error finding local service: {}, using recorded response", e);
+                        warn!(
+                            "Error finding local service: {}, using recorded response",
+                            e
+                        );
                     }
                 }
             }
 
             // 如果本地服务不可用或出错，返回记录的响应
-            let mut response = Response::builder()
-                .status(record.response.status.unwrap_or(200));
+            let mut response = Response::builder().status(record.response.status.unwrap_or(200));
 
             // 添加响应头
             if let Some(headers) = record.response.headers {
@@ -550,7 +623,8 @@ impl PlaybackService {
             }
 
             // 构建并返回响应
-            response.body(Full::new(Bytes::from(record.response.body)))
+            response
+                .body(Full::new(Bytes::from(record.response.body)))
                 .unwrap_or_else(|_| {
                     Response::builder()
                         .status(StatusCode::INTERNAL_SERVER_ERROR)
@@ -567,24 +641,34 @@ impl PlaybackService {
     }
 
     /// 获取最近的流量记录
-    /// 
+    ///
     /// # 参数
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
     /// * `since` - 起始时间点，如果为 None 则默认获取最近一小时的记录
-    /// 
+    ///
     /// # 返回值
     /// 返回指定时间段内的流量记录列表
-    pub async fn get_recent_records(&self, peer_id: &str, shard_id: &str, since: Option<u128>) -> Result<Vec<TrafficRecord>, Error> {
+    pub async fn get_recent_records(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+        since: Option<u128>,
+    ) -> Result<Vec<TrafficRecord>, Error> {
         let key = self.get_traffic_key(peer_id, shard_id);
         let since = since.unwrap_or_else(|| {
-            SystemTime::now().checked_sub(Duration::from_secs(3600)).unwrap().duration_since(UNIX_EPOCH).unwrap().as_millis() // 默认获取最近一小时的记录
+            SystemTime::now()
+                .checked_sub(Duration::from_secs(3600))
+                .unwrap()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() // 默认获取最近一小时的记录
         });
         let min_score = since.clone() as u64;
-        
+
         let mut conn = self.redis_pool.as_ref().clone();
         let records: Vec<String> = conn.zrangebyscore(&key, min_score, "+inf").await?;
-        
+
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
@@ -595,18 +679,22 @@ impl PlaybackService {
     }
 
     /// 获取所有流量记录
-    /// 
+    ///
     /// # 参数
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
-    /// 
+    ///
     /// # 返回值
     /// 返回所有存储的流量记录列表
-    pub async fn get_all_records(&self, peer_id: &str, shard_id: &str) -> Result<Vec<TrafficRecord>, Error> {
+    pub async fn get_all_records(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+    ) -> Result<Vec<TrafficRecord>, Error> {
         let key = self.get_traffic_key(peer_id, shard_id);
         let mut conn = self.redis_pool.as_ref().clone();
         let records: Vec<String> = conn.zrange(&key, 0, -1).await?;
-        
+
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
@@ -617,19 +705,27 @@ impl PlaybackService {
     }
 
     /// 同步来自peer的记录
-    /// 
+    ///
     /// # 参数
     /// * `peer_id` - 对等节点标识
     /// * `shard_id` - 分片标识
     /// * `records` - 要同步的记录列表
-    pub async fn sync_from_peer(&self, peer_id: &str, shard_id: &str, records: Vec<TrafficRecord>) -> Result<(), Error> {
+    pub async fn sync_from_peer(
+        &self,
+        peer_id: &str,
+        shard_id: &str,
+        records: Vec<TrafficRecord>,
+    ) -> Result<(), Error> {
         if records.is_empty() {
             return Ok(());
         }
 
         // 开始同步
         if !self.start_sync(peer_id, shard_id).await? {
-            warn!("Failed to acquire sync lock for peer: {}, shard: {}", peer_id, shard_id);
+            warn!(
+                "Failed to acquire sync lock for peer: {}, shard: {}",
+                peer_id, shard_id
+            );
             return Ok(());
         }
 
@@ -660,16 +756,24 @@ impl PlaybackService {
             self.update_checkpoint(&checkpoint).await?;
 
             Ok::<(), Error>(())
-        }.await;
+        }
+        .await;
 
         match result {
             Ok(()) => {
                 self.complete_sync(peer_id, shard_id, true, None).await?;
-                info!("Successfully synced records from peer: {}, shard: {}", peer_id, shard_id);
+                info!(
+                    "Successfully synced records from peer: {}, shard: {}",
+                    peer_id, shard_id
+                );
             }
             Err(e) => {
-                self.complete_sync(peer_id, shard_id, false, Some(e.to_string())).await?;
-                error!("Failed to sync records from peer: {}, shard: {}, error: {}", peer_id, shard_id, e);
+                self.complete_sync(peer_id, shard_id, false, Some(e.to_string()))
+                    .await?;
+                error!(
+                    "Failed to sync records from peer: {}, shard: {}, error: {}",
+                    peer_id, shard_id, e
+                );
             }
         }
 
@@ -681,7 +785,7 @@ impl PlaybackService {
         let mut conn = self.redis_pool.as_ref().clone();
         let pattern = format!("{}*", CHECKPOINT_KEY_PREFIX);
         let keys: Vec<String> = conn.keys(&pattern).await?;
-        
+
         let mut checkpoints = Vec::new();
         for key in keys {
             let json: String = conn.get(&key).await?;
@@ -689,12 +793,12 @@ impl PlaybackService {
                 checkpoints.push(checkpoint);
             }
         }
-        
+
         Ok(checkpoints)
     }
 
     /// 触发流量回放
-    /// 
+    ///
     /// 当收到新的流量记录时调用此方法来触发回放
     /// 支持以下场景:
     /// 1. HTTP/TCP 录制流量
@@ -702,7 +806,12 @@ impl PlaybackService {
     /// 3. 轮询获取的新流量
     pub async fn trigger_replay(&self, record: &TrafficRecord) {
         if let Some(service_name) = record.request.service_name.as_ref() {
-            match SERVICE_REGISTRY.read().await.find_local_service(service_name).await {
+            match SERVICE_REGISTRY
+                .read()
+                .await
+                .find_local_service(service_name)
+                .await
+            {
                 Ok(Some(service)) => {
                     // 构建本地服务连接地址
                     let addr = format!("{}:{}", service.host, service.port);
@@ -720,16 +829,37 @@ impl PlaybackService {
                             }
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
-                            let scheme = if record.protocol == Protocol::HTTPS { "https" } else { "http" };
-                            let local_url = format!("{}://{}:{}{}", 
+                            let scheme = if record.protocol == Protocol::HTTPS {
+                                "https"
+                            } else {
+                                "http"
+                            };
+                            let local_url = format!(
+                                "{}://{}:{}{}",
                                 scheme,
-                                service.host, 
+                                service.host,
                                 service.port,
-                                record.request.params.as_ref().map(|u| u.iter().map(|(k, v)| format!("{}={}", k, v)).collect::<Vec<String>>().join("&")).unwrap_or("".to_string())
+                                record
+                                    .request
+                                    .params
+                                    .as_ref()
+                                    .map(|u| u
+                                        .iter()
+                                        .map(|(k, v)| format!("{}={}", k, v))
+                                        .collect::<Vec<String>>()
+                                        .join("&"))
+                                    .unwrap_or("".to_string())
                             );
 
                             let local_req = Request::builder()
-                                .method(record.request.method.as_ref().unwrap_or(&"GET".to_string()).as_str())
+                                .method(
+                                    record
+                                        .request
+                                        .method
+                                        .as_ref()
+                                        .unwrap_or(&"GET".to_string())
+                                        .as_str(),
+                                )
                                 .uri(&local_url);
 
                             // TODO 确认录制流量是否带有鉴权信息
@@ -743,13 +873,17 @@ impl PlaybackService {
                                 local_req
                             };
 
-                            if let Ok(request) = local_req.body(Full::new(Bytes::from(record.request.body.clone()))) {
+                            if let Ok(request) =
+                                local_req.body(Full::new(Bytes::from(record.request.body.clone())))
+                            {
                                 let client = Builder::new((*self.executor).clone())
                                     .pool_idle_timeout(std::time::Duration::from_secs(30))
                                     .build_http();
 
                                 match client.request(request).await {
-                                    Ok(_) => info!("Successfully replayed HTTP traffic to {}", local_url),
+                                    Ok(_) => {
+                                        info!("Successfully replayed HTTP traffic to {}", local_url)
+                                    }
                                     Err(e) => warn!("Failed to replay HTTP traffic: {}", e),
                                 }
                             }
@@ -766,7 +900,10 @@ impl PlaybackService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{model::{RequestData, ResponseData}, service_discovery::ServiceInstance};
+    use crate::{
+        model::{RequestData, ResponseData},
+        service_discovery::ServiceInstance,
+    };
     use std::{collections::HashMap, time::Instant};
 
     #[tokio::test]
@@ -788,16 +925,23 @@ mod tests {
         );
 
         service.add_record(record.clone()).await.unwrap();
-        
+
         let req = Request::builder()
             .method("GET")
             .uri("http://test-service/api/test")
             .body(Full::new(Bytes::from("")))
             .unwrap();
 
-        let found_record = service.find_matching_record(&req, &record.peer_id, "default").await.unwrap().unwrap();
+        let found_record = service
+            .find_matching_record(&req, &record.peer_id, "default")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(found_record.request.method, Some("GET".to_string()));
-        assert_eq!(found_record.request.service_name, Some("http://test-service/api/test".to_string()));
+        assert_eq!(
+            found_record.request.service_name,
+            Some("http://test-service/api/test".to_string())
+        );
     }
 
     #[tokio::test]
@@ -895,8 +1039,20 @@ mod tests {
         service.add_record(new_record.clone()).await.unwrap();
 
         // 获取最近1小时的记录
-        let recent_records = service.get_recent_records("test", "default", Some((now - Duration::from_secs(3600)).duration_since(UNIX_EPOCH).unwrap().as_millis())).await.unwrap();
+        let recent_records = service
+            .get_recent_records(
+                "test",
+                "default",
+                Some(
+                    (now - Duration::from_secs(3600))
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_millis(),
+                ),
+            )
+            .await
+            .unwrap();
         assert_eq!(recent_records.len(), 1);
         assert_eq!(recent_records[0].id, "new");
     }
-} 
+}

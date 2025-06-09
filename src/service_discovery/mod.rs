@@ -8,9 +8,9 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use url::Url;
 
+mod kubernetes_provider;
 mod static_provider;
 mod zookeeper_provider;
-mod kubernetes_provider;
 
 use kubernetes_provider::KubernetesServiceDiscovery;
 use static_provider::StaticServiceDiscovery;
@@ -97,7 +97,9 @@ pub struct ServiceRegistry {
 impl ServiceRegistry {
     pub fn new() -> Self {
         Self {
-            backend: Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new())),
+            backend: Arc::new(ServiceDiscoveryBackendEnum::Static(
+                StaticServiceDiscovery::new(),
+            )),
             services_cache: Arc::new(RwLock::new(HashMap::new())),
         }
     }
@@ -109,12 +111,14 @@ impl ServiceRegistry {
                 let provider = StaticServiceDiscovery::new();
                 if let Some(services) = &options.service_discovery.config.static_services {
                     for service in services {
-                        provider.add_service(ServiceInstance {
-                            name: service.name.clone(),
-                            host: service.host.clone(),
-                            port: service.port,
-                            metadata: service.metadata.clone(),
-                        }).await?;
+                        provider
+                            .add_service(ServiceInstance {
+                                name: service.name.clone(),
+                                host: service.host.clone(),
+                                port: service.port,
+                                metadata: service.metadata.clone(),
+                            })
+                            .await?;
                     }
                 }
                 Arc::new(ServiceDiscoveryBackendEnum::Static(provider))
@@ -125,11 +129,14 @@ impl ServiceRegistry {
                         zk_config.hosts.clone(),
                         zk_config.base_path.clone(),
                         zk_config.timeout.unwrap_or(30000),
-                    ).await?;
+                    )
+                    .await?;
                     Arc::new(ServiceDiscoveryBackendEnum::Zookeeper(zk))
                 } else {
                     warn!("Zookeeper configuration is missing, falling back to static provider");
-                    Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
+                    Arc::new(ServiceDiscoveryBackendEnum::Static(
+                        StaticServiceDiscovery::new(),
+                    ))
                 }
             }
             ServiceDiscoveryProvider::Kubernetes => {
@@ -139,23 +146,32 @@ impl ServiceRegistry {
                         k8s_config.service_account_token_path.clone(),
                         k8s_config.api_server.clone(),
                         k8s_config.label_selector.clone(),
-                    ).await {
+                    )
+                    .await
+                    {
                         Ok(k8s) => Arc::new(ServiceDiscoveryBackendEnum::Kubernetes(k8s)),
                         Err(e) => {
                             error!("Failed to initialize Kubernetes provider: {}, falling back to static provider", e);
-                            Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
+                            Arc::new(ServiceDiscoveryBackendEnum::Static(
+                                StaticServiceDiscovery::new(),
+                            ))
                         }
                     }
                 } else {
                     warn!("Kubernetes configuration is missing, falling back to static provider");
-                    Arc::new(ServiceDiscoveryBackendEnum::Static(StaticServiceDiscovery::new()))
+                    Arc::new(ServiceDiscoveryBackendEnum::Static(
+                        StaticServiceDiscovery::new(),
+                    ))
                 }
             }
         };
 
         self.backend.init().await?;
         self.refresh_cache().await?;
-        info!("Service registry initialized with provider: {:?}", options.service_discovery.provider);
+        info!(
+            "Service registry initialized with provider: {:?}",
+            options.service_discovery.provider
+        );
         Ok(())
     }
 
@@ -212,13 +228,15 @@ impl ServiceRegistry {
 
     /// 从URL中提取服务名称
     pub fn extract_service_name(&self, url: &str) -> Result<String, Error> {
-        let parsed_url = Url::parse(url)
-            .map_err(|e| Error::Config(format!("Invalid URL: {}", e)))?;
-        
-        let host = parsed_url.host_str()
+        let parsed_url =
+            Url::parse(url).map_err(|e| Error::Config(format!("Invalid URL: {}", e)))?;
+
+        let host = parsed_url
+            .host_str()
             .ok_or_else(|| Error::Config("No host in URL".to_string()))?;
 
-        let service_name = host.split('.')
+        let service_name = host
+            .split('.')
             .next()
             .ok_or_else(|| Error::Config("Invalid service name".to_string()))?
             .to_string();
@@ -227,16 +245,18 @@ impl ServiceRegistry {
     }
 
     /// 从URL中查找本地服务节点
-    pub async fn find_local_service_from_url(&self, original_url: &str) -> Result<Option<ServiceInstance>, Error> {
+    pub async fn find_local_service_from_url(
+        &self,
+        original_url: &str,
+    ) -> Result<Option<ServiceInstance>, Error> {
         let service_name = self.extract_service_name(original_url)?;
         self.find_local_service(&service_name).await
     }
 }
 
 // 全局服务注册表
-pub static SERVICE_REGISTRY: once_cell::sync::Lazy<Arc<RwLock<ServiceRegistry>>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(RwLock::new(ServiceRegistry::new()))
-});
+pub static SERVICE_REGISTRY: once_cell::sync::Lazy<Arc<RwLock<ServiceRegistry>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(RwLock::new(ServiceRegistry::new())));
 
 #[cfg(test)]
 mod tests {
@@ -247,7 +267,7 @@ mod tests {
     fn test_service_instance_new() {
         let mut metadata = HashMap::new();
         metadata.insert("version".to_string(), "1.0".to_string());
-        
+
         let instance = ServiceInstance {
             name: "test-service".to_string(),
             host: "localhost".to_string(),
@@ -309,13 +329,17 @@ mod tests {
     #[tokio::test]
     async fn test_service_name_extraction() {
         let registry = ServiceRegistry::new();
-        
+
         // 测试简单URL
-        let name = registry.extract_service_name("http://user-service:8080/api/users").unwrap();
+        let name = registry
+            .extract_service_name("http://user-service:8080/api/users")
+            .unwrap();
         assert_eq!(name, "user-service");
 
         // 测试带有域名的URL
-        let name = registry.extract_service_name("http://user-service.default.svc.cluster.local:8080/api/users").unwrap();
+        let name = registry
+            .extract_service_name("http://user-service.default.svc.cluster.local:8080/api/users")
+            .unwrap();
         assert_eq!(name, "user-service");
 
         // 测试无效URL
@@ -342,7 +366,10 @@ mod tests {
         assert_eq!(service.port, 8080);
 
         // 测试查找不存在的服务
-        let result = registry.find_local_service("unknown-service").await.unwrap();
+        let result = registry
+            .find_local_service("unknown-service")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
-} 
+}

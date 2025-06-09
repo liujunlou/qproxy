@@ -5,7 +5,9 @@ use http::Uri;
 use k8s_openapi::api::core::v1::Service;
 use kube::config::Kubeconfig;
 use kube::{
-    api::{Api, ListParams}, config::{self, AuthInfo, KubeConfigOptions}, Client, Config
+    api::{Api, ListParams},
+    config::{self, AuthInfo, KubeConfigOptions},
+    Client, Config,
 };
 use secrecy::SecretString;
 use std::{collections::HashMap, str::FromStr};
@@ -27,9 +29,9 @@ impl KubernetesServiceDiscovery {
     ) -> Result<Self, Error> {
         let client = match (api_server, service_account_token_path) {
             (Some(server), Some(token_path)) => {
-                let token = fs::read_to_string(&token_path)
-                    .await
-                    .map_err(|e| Error::ServiceDiscovery(format!("Failed to read token file: {}", e)))?;
+                let token = fs::read_to_string(&token_path).await.map_err(|e| {
+                    Error::ServiceDiscovery(format!("Failed to read token file: {}", e))
+                })?;
 
                 let server_uri = Uri::from_str(&server)
                     .map_err(|e| Error::ServiceDiscovery(format!("Invalid server URL: {}", e)))?;
@@ -41,14 +43,16 @@ impl KubernetesServiceDiscovery {
                     ..Default::default()
                 };
 
-                Client::try_from(config)
-                    .map_err(|e| Error::ServiceDiscovery(format!("Failed to create Kubernetes client: {}", e)))?
+                Client::try_from(config).map_err(|e| {
+                    Error::ServiceDiscovery(format!("Failed to create Kubernetes client: {}", e))
+                })?
             }
-            _ => {
-                Client::try_default()
-                    .await
-                    .map_err(|e| Error::ServiceDiscovery(format!("Failed to create default Kubernetes client: {}", e)))?
-            }
+            _ => Client::try_default().await.map_err(|e| {
+                Error::ServiceDiscovery(format!(
+                    "Failed to create default Kubernetes client: {}",
+                    e
+                ))
+            })?,
         };
 
         Ok(Self {
@@ -61,7 +65,7 @@ impl KubernetesServiceDiscovery {
     async fn list_services(&self) -> Result<Vec<Service>, Error> {
         let api: Api<Service> = Api::namespaced(self.client.clone(), &self.namespace);
         let mut params = ListParams::default();
-        
+
         if let Some(selector) = &self.label_selector {
             params = params.labels(selector);
         }
@@ -107,27 +111,39 @@ impl ServiceDiscoveryBackend for KubernetesServiceDiscovery {
 
     async fn register(&self, _instance: ServiceInstance) -> Result<(), Error> {
         // Kubernetes中服务注册通常通过YAML或Operator完成
-        Err(Error::ServiceDiscovery("Service registration not supported in Kubernetes provider".to_string()))
+        Err(Error::ServiceDiscovery(
+            "Service registration not supported in Kubernetes provider".to_string(),
+        ))
     }
 
     async fn deregister(&self, _name: &str) -> Result<(), Error> {
         // Kubernetes中服务注销通常通过YAML或Operator完成
-        Err(Error::ServiceDiscovery("Service deregistration not supported in Kubernetes provider".to_string()))
+        Err(Error::ServiceDiscovery(
+            "Service deregistration not supported in Kubernetes provider".to_string(),
+        ))
     }
 
     async fn get_instances(&self, name: &str) -> Result<Vec<ServiceInstance>, Error> {
         let services = self.list_services().await?;
-        
-        Ok(services.into_iter()
-            .filter(|svc| svc.metadata.name.as_ref().map(|n| n == name).unwrap_or(false))
+
+        Ok(services
+            .into_iter()
+            .filter(|svc| {
+                svc.metadata
+                    .name
+                    .as_ref()
+                    .map(|n| n == name)
+                    .unwrap_or(false)
+            })
             .filter_map(Self::service_to_instance)
             .collect())
     }
 
     async fn get_all_services(&self) -> Result<Vec<ServiceInstance>, Error> {
         let services = self.list_services().await?;
-        
-        Ok(services.into_iter()
+
+        Ok(services
+            .into_iter()
             .filter_map(Self::service_to_instance)
             .collect())
     }
@@ -168,7 +184,7 @@ mod tests {
     fn test_service_to_instance_conversion() {
         let k8s_service = create_test_k8s_service("test-service", "10.0.0.1", 8080);
         let instance = KubernetesServiceDiscovery::service_to_instance(k8s_service).unwrap();
-        
+
         assert_eq!(instance.name, "test-service");
         assert_eq!(instance.host, "10.0.0.1");
         assert_eq!(instance.port, 8080);
@@ -179,7 +195,7 @@ mod tests {
     fn test_service_to_instance_missing_data() {
         let mut service = create_test_k8s_service("test-service", "10.0.0.1", 8080);
         service.spec = None;
-        
+
         assert!(KubernetesServiceDiscovery::service_to_instance(service).is_none());
     }
-} 
+}

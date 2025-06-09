@@ -23,17 +23,17 @@ pub enum Protocol {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RequestData {
-    pub method: Option<String>,  // HTTP/HTTPS only
-    pub service_name: Option<String>,     // 请求的服务名
+    pub method: Option<String>,       // HTTP/HTTPS only
+    pub service_name: Option<String>, // 请求的服务名
     pub params: Option<Vec<(String, String)>>,
-    pub headers: Option<Vec<(String, String)>>,  // HTTP/HTTPS only
+    pub headers: Option<Vec<(String, String)>>, // HTTP/HTTPS only
     pub body: Vec<u8>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ResponseData {
-    pub status: Option<u16>,     // HTTP/HTTPS only
-    pub headers: Option<Vec<(String, String)>>,  // HTTP/HTTPS only
+    pub status: Option<u16>,                    // HTTP/HTTPS only
+    pub headers: Option<Vec<(String, String)>>, // HTTP/HTTPS only
     pub body: Vec<u8>,
 }
 
@@ -53,7 +53,10 @@ impl TrafficRecord {
             peer_id: service_name.clone(),
             protocol: Protocol::HTTP,
             codec: None,
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
             request: RequestData {
                 method: Some(method),
                 service_name: Some(service_name.clone()),
@@ -76,7 +79,10 @@ impl TrafficRecord {
             protocol: Protocol::TCP,
             // TODO 需要根据具体的消息类型来确定
             codec: Some(MessageType::Publish),
-            timestamp: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
             request: RequestData {
                 method: None,
                 service_name: Some(service_name.to_string()),
@@ -100,7 +106,7 @@ impl TrafficRecord {
         //     // 解析拉取的body为具体的消息对象
         //     let request_body = MqttCodec::decode(&filtered.request.body)?;
         //     // TODO 反序列化为具体的消息对象
-            
+
         //     // 过滤其中的字段
         //     filtered.request.body = fields.iter().map(|field| {
         //         filtered.request.body.iter().filter(|item| {
@@ -108,7 +114,7 @@ impl TrafficRecord {
         //         }).collect()
         //     }).collect();
         // }
-        
+
         Ok(filtered)
     }
-} 
+}

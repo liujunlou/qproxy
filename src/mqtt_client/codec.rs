@@ -301,7 +301,7 @@ impl Decoder for MqttCodec {
 
         // Read message type (1 byte after length)
         let msg_type = src[4];
-        
+
         // Read the actual message payload
         let payload = src[5..5 + length].to_vec();
         src.advance(length + 5);
@@ -412,13 +412,13 @@ impl Encoder<MqttMessage> for MqttCodec {
         };
 
         let length = payload.len() as u32;
-        
+
         // Write message length (4 bytes)
         dst.put_u32(length);
-        
+
         // Write message type (1 byte)
         dst.put_u8(msg_type);
-        
+
         // Write payload
         dst.extend_from_slice(&payload);
 
@@ -482,7 +482,15 @@ impl PublishMessage {
     }
 
     pub fn field_names() -> Vec<&'static str> {
-        vec!["topic", "payload", "message_id", "qos", "retain", "dup", "properties"]
+        vec![
+            "topic",
+            "payload",
+            "message_id",
+            "qos",
+            "retain",
+            "dup",
+            "properties",
+        ]
     }
 }
 
@@ -509,7 +517,15 @@ impl QueryMessage {
     }
 
     pub fn field_names() -> Vec<&'static str> {
-        vec!["type", "payload", "device_id", "message_id", "qos", "retain", "dup"]
+        vec![
+            "type",
+            "payload",
+            "device_id",
+            "message_id",
+            "qos",
+            "retain",
+            "dup",
+        ]
     }
 }
 
@@ -534,7 +550,7 @@ impl Message {
 // Add serde serialization support for Bytes
 mod bytes_serde {
     use bytes::Bytes;
-    use serde::{Deserialize, Deserializer, Serializer, Serialize};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<S>(bytes: &Bytes, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -550,4 +566,4 @@ mod bytes_serde {
         let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
         Ok(Bytes::from(bytes))
     }
-} 
+}

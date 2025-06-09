@@ -10,13 +10,13 @@ use tracing_subscriber::{
 use crate::{errors::Error, options::LoggingOptions};
 
 /// 初始化日志系统
-/// 
+///
 /// # 参数
-/// 
+///
 /// * `opts` - 程序配置选项
-/// 
+///
 /// # 返回值
-/// 
+///
 /// 返回初始化结果
 pub fn init_logger(opts: &LoggingOptions) -> Result<(), Error> {
     // 创建日志目录
@@ -58,8 +58,7 @@ pub fn init_logger(opts: &LoggingOptions) -> Result<(), Error> {
         .with_span_events(FmtSpan::FULL);
 
     // 创建环境过滤器
-    let env_filter = EnvFilter::from_default_env()
-        .add_directive(level.into());
+    let env_filter = EnvFilter::from_default_env().add_directive(level.into());
 
     // 设置全局默认订阅者
     tracing_subscriber::registry()
@@ -100,21 +99,21 @@ fn compress_old_logs(log_dir: &Path) {
 
 /// 压缩单个文件
 fn compress_file(path: &Path) -> std::io::Result<()> {
-    use std::fs::File;
-    use std::io::{Read, Write};
     use flate2::write::GzEncoder;
     use flate2::Compression;
+    use std::fs::File;
+    use std::io::{Read, Write};
 
     let mut input = File::open(path)?;
     let output = File::create(path.with_extension("gz"))?;
     let mut encoder = GzEncoder::new(output, Compression::default());
-    
+
     let mut buffer = Vec::new();
     input.read_to_end(&mut buffer)?;
     encoder.write_all(&buffer)?;
     encoder.finish()?;
-    
+
     std::fs::remove_file(path)?;
-    
+
     Ok(())
-} 
+}

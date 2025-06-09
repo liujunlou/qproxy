@@ -1,11 +1,16 @@
+use bytes::{Bytes, BytesMut};
 use std::sync::{Arc, RwLock};
 use tokio_util::codec::{Decoder, Encoder};
-use bytes::{Bytes, BytesMut};
 
-use crate::{errors::Error, model::{Protocol, TrafficRecord}, mqtt_client::codec::{MqttCodec, Message, MessageType, PublishMessage, QueryMessage, MqttMessage}};
+use crate::{
+    errors::Error,
+    model::{Protocol, TrafficRecord},
+    mqtt_client::codec::{
+        Message, MessageType, MqttCodec, MqttMessage, PublishMessage, QueryMessage,
+    },
+};
 
 use super::Filter;
-
 
 pub struct ResponseFilter {
     mqtt_codec: Arc<RwLock<MqttCodec>>,
@@ -33,14 +38,16 @@ impl Filter for ResponseFilter {
         if record.protocol == Protocol::TCP {
             // 将 Vec<u8> 转换为 BytesMut
             let mut buf = BytesMut::from(&filtered.response.body[..]);
-            
+
             // 解析拉取的body为具体的消息对象
-            let msg = self.mqtt_codec.write()
+            let msg = self
+                .mqtt_codec
+                .write()
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?
                 .decode_eof(&mut buf)
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?
                 .ok_or_else(|| Error::MqttDecodeError("Failed to decode message".to_string()))?;
-            
+
             // 根据消息类型处理
             let updated_msg = match msg {
                 MqttMessage::Publish(publish_msg) => {
@@ -70,13 +77,14 @@ impl Filter for ResponseFilter {
 
             // 更新 body
             let mut buf = BytesMut::new();
-            self.mqtt_codec.write()
+            self.mqtt_codec
+                .write()
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?
                 .encode(updated_msg, &mut buf)
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
             filtered.response.body = buf.to_vec();
         }
-        
+
         Ok(filtered)
     }
 }

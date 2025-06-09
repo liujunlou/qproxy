@@ -43,7 +43,11 @@ impl ServiceDiscoveryBackend for StaticServiceDiscovery {
 
     async fn get_instances(&self, name: &str) -> Result<Vec<ServiceInstance>, Error> {
         let services = self.services.read().await;
-        Ok(services.get(name).cloned().map(|s| vec![s]).unwrap_or_default())
+        Ok(services
+            .get(name)
+            .cloned()
+            .map(|s| vec![s])
+            .unwrap_or_default())
     }
 
     async fn get_all_services(&self) -> Result<Vec<ServiceInstance>, Error> {
@@ -78,7 +82,7 @@ mod tests {
         let instance = create_test_instance();
         let provider = StaticServiceDiscovery::new();
         provider.add_service(instance.clone()).await.unwrap();
-        
+
         let instances = provider.get_instances("test-service").await.unwrap();
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].name, "test-service");
@@ -91,7 +95,7 @@ mod tests {
         let instance = create_test_instance();
         let provider = StaticServiceDiscovery::new();
         provider.add_service(instance.clone()).await.unwrap();
-        
+
         let services = provider.get_all_services().await.unwrap();
         assert_eq!(services.len(), 1);
         assert_eq!(services[0].name, "test-service");
@@ -110,4 +114,4 @@ mod tests {
         let result = provider.deregister("test-service").await;
         assert!(result.is_err());
     }
-} 
+}

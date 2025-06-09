@@ -25,7 +25,7 @@ impl SyncService {
             .timeout(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(10))
             .build()?;
-        
+
         Ok(Self {
             options: Arc::new(options),
             client: Arc::new(client),
@@ -43,7 +43,7 @@ impl SyncService {
                     info!("Sync service received shutdown signal");
                     break;
                 }
-                
+
                 if let Err(e) = Self::sync_with_peers(&options, &client).await {
                     error!("Sync error: {}", e);
                 }
@@ -67,10 +67,11 @@ impl SyncService {
                 return Ok(());
             }
             let peer = peer.clone();
-            
+
             let playback_service = PLAYBACK_SERVICE.lock().await;
             if let Some(playback_service) = playback_service.as_ref() {
-                if let Err(e) = Self::sync_from_peer(client, &peer, playback_service.clone()).await {
+                if let Err(e) = Self::sync_from_peer(client, &peer, playback_service.clone()).await
+                {
                     error!("Failed to sync from peer: {}", e);
                 }
             }
@@ -79,18 +80,24 @@ impl SyncService {
     }
 
     /// 从peer拉取流量记录并推到回放服务
-    async fn sync_from_peer(client: &Arc<Client>, peer: &PeerOptions, playback_service: Arc<PlaybackService>) -> Result<(), Error> {
+    async fn sync_from_peer(
+        client: &Arc<Client>,
+        peer: &PeerOptions,
+        playback_service: Arc<PlaybackService>,
+    ) -> Result<(), Error> {
         let scheme = if peer.tls { "https" } else { "http" };
         let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
 
         info!("Syncing traffic records from peer: {}", url);
 
-        let response = client.get(&url)
+        let response = client
+            .get(&url)
             .send()
             .await
             .map_err(|e| Error::Proxy(format!("Failed to connect to peer: {}", e)))?;
 
-        let records: Vec<TrafficRecord> = response.json()
+        let records: Vec<TrafficRecord> = response
+            .json()
             .await
             .map_err(|e| Error::Proxy(format!("Failed to parse peer response: {}", e)))?;
 
@@ -102,4 +109,4 @@ impl SyncService {
         info!("Successfully synced and replayed traffic records from peer");
         Ok(())
     }
-} 
+}

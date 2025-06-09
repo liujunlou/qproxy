@@ -1,7 +1,7 @@
 /target
+/logs
 .DS_Store
 Cargo.lock
-logs/
 .vscode/
 .idea/
 .env

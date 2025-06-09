@@ -32,4 +32,4 @@ impl RecordService {
         let mut records = self.records.write().await;
         records.clear();
     }
-} 
+}

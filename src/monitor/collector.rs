@@ -1,12 +1,18 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use crate::{
+    errors::Error,
+    monitor::MetricsCollector,
+    options::{Options, ProxyMode},
+};
 use prometheus::TextEncoder;
 use redis::{AsyncCommands, Commands};
+use std::sync::Arc;
+use sysinfo::{Networks, System};
+use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
-use sysinfo::{System, Networks};
-use crate::{errors::Error, monitor::MetricsCollector, options::{Options, ProxyMode}};
 
-use super::{ServiceStatus, CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE, NETWORK_CONNECTIONS_GAUGE, NETWORK_IO_GAUGE};
+use super::{
+    ServiceStatus, CPU_USAGE_GAUGE, MEMORY_USAGE_GAUGE, NETWORK_CONNECTIONS_GAUGE, NETWORK_IO_GAUGE,
+};
 
 pub struct MetricsCollectorTask {
     opts: Arc<Options>,
@@ -27,7 +33,7 @@ impl MetricsCollectorTask {
 
     pub async fn start(&mut self) {
         let mut interval = interval(Duration::from_secs(15));
-        
+
         loop {
             interval.tick().await;
             self.collect_metrics().await;
@@ -41,8 +47,7 @@ impl MetricsCollectorTask {
     }
 
     pub async fn get_health(&self) -> Result<String, Error> {
-        let health = self.metrics.read().await
-            .get_health_status().await;
+        let health = self.metrics.read().await.get_health_status().await;
         serde_json::to_string(&health).map_err(Error::from)
     }
 
@@ -56,7 +61,10 @@ impl MetricsCollectorTask {
         // 收集内存使用率
         MEMORY_USAGE_GAUGE.set(self.sys.used_memory() as f64 / self.sys.total_memory() as f64);
         // 收集网络IO
-        let network_io = self.network.list().iter()
+        let network_io = self
+            .network
+            .list()
+            .iter()
             .map(|(_, data)| data.received() + data.transmitted())
             .sum::<u64>();
         NETWORK_IO_GAUGE.set(network_io as f64);
@@ -73,40 +81,56 @@ impl MetricsCollectorTask {
             ServiceStatus::Up
         } else {
             match redis::Client::open(self.opts.redis.url.as_str()) {
-                Ok(client) => {
-                    match client.get_connection_manager().await {
-                        Ok(mut conn) => {
-                            match conn.ping::<String>().await {
-                                Ok(r) => if r.eq("PONG") {ServiceStatus::Up} else {ServiceStatus::Down},
-                                Err(_) => ServiceStatus::Down,
+                Ok(client) => match client.get_connection_manager().await {
+                    Ok(mut conn) => match conn.ping::<String>().await {
+                        Ok(r) => {
+                            if r.eq("PONG") {
+                                ServiceStatus::Up
+                            } else {
+                                ServiceStatus::Down
                             }
-                        },
+                        }
                         Err(_) => ServiceStatus::Down,
-                    }
+                    },
+                    Err(_) => ServiceStatus::Down,
                 },
                 Err(_) => ServiceStatus::Down,
             }
         };
 
-        let system_status = if self.sys.global_cpu_usage() < 0.80 && 
-            (self.sys.used_memory() as f64 / self.sys.total_memory() as f64) < 0.80 {
+        let system_status = if self.sys.global_cpu_usage() < 0.80
+            && (self.sys.used_memory() as f64 / self.sys.total_memory() as f64) < 0.80
+        {
             ServiceStatus::Up
         } else {
             ServiceStatus::Down
         };
 
         // 更新组件状态
-        self.metrics.write().await.update_component_status("redis", redis_status.clone()).await;
-        self.metrics.write().await.update_component_status("system", system_status.clone()).await;
+        self.metrics
+            .write()
+            .await
+            .update_component_status("redis", redis_status.clone())
+            .await;
+        self.metrics
+            .write()
+            .await
+            .update_component_status("system", system_status.clone())
+            .await;
 
         // 更新整体状态
-        let overall_status = if redis_status == crate::monitor::ServiceStatus::Up 
-            && system_status == crate::monitor::ServiceStatus::Up {
+        let overall_status = if redis_status == crate::monitor::ServiceStatus::Up
+            && system_status == crate::monitor::ServiceStatus::Up
+        {
             crate::monitor::ServiceStatus::Up
         } else {
             crate::monitor::ServiceStatus::Down
         };
 
-        self.metrics.write().await.update_health_status(overall_status, None).await;
+        self.metrics
+            .write()
+            .await
+            .update_health_status(overall_status, None)
+            .await;
     }
-} 
+}

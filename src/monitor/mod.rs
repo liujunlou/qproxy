@@ -1,9 +1,9 @@
-use std::sync::Arc;
-use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
-use std::time::{Duration, Instant};
 use crate::options::ProxyMode;
-use prometheus::{Counter, Gauge, Histogram, register_counter, register_gauge, register_histogram};
+use prometheus::{register_counter, register_gauge, register_histogram, Counter, Gauge, Histogram};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::RwLock;
 
 pub mod collector;
 
@@ -31,13 +31,13 @@ lazy_static::lazy_static! {
         "qproxy_cpu_usage_gauge",
         "The current CPU usage of qproxy"
     ).expect("Failed to register CPU usage gauge");
-    
+
     // 系统指标：内存使用率
     pub static ref MEMORY_USAGE_GAUGE: Gauge = register_gauge!(
         "qproxy_memory_usage_gauge",
         "The current memory usage of qproxy"
     ).expect("Failed to register memory usage gauge");
-    
+
     // 系统指标：网络IO
     pub static ref NETWORK_IO_GAUGE: Gauge = register_gauge!(
         "qproxy_network_io_gauge",
@@ -137,4 +137,4 @@ pub struct AlertThresholds {
     pub cpu_usage: f64,
     pub memory_usage: f64,
     pub disk_usage: f64,
-} 
+}

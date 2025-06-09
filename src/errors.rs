@@ -54,7 +54,6 @@ pub enum Error {
     // 监控指标错误
     #[error("Metric error: {0}")]
     Metric(prometheus::Error),
-
 }
 
 impl From<String> for Error {
@@ -101,4 +100,4 @@ mod tests {
         let err: Error = io_err.into();
         assert!(matches!(err, Error::Io(_)));
     }
-} 
+}

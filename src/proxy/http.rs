@@ -10,10 +10,10 @@ use tokio::net::TcpListener;
 use tokio::sync::broadcast;
 use tracing::{error, info};
 
-use crate::{get_shutdown_rx, ONCE_FILTER_CHAIN};
 use crate::{
-    errors::Error, model::TrafficRecord, options::Options, PLAYBACK_SERVICE, METRICS_COLLECTOR
+    errors::Error, model::TrafficRecord, options::Options, METRICS_COLLECTOR, PLAYBACK_SERVICE,
 };
+use crate::{get_shutdown_rx, ONCE_FILTER_CHAIN};
 
 // 启动http服务端
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
@@ -84,71 +84,79 @@ async fn handle_request(
             if let Some(playback_service) = playback_service.as_ref() {
                 match req.method() {
                     // 获取需要同步的记录
-                &http::Method::GET => {
-                    // 获取 GET 请求的params参数
-                    let uri = req.uri().clone();
-                    let query_params: HashMap<_, _> = uri.query()
-                        .map(|q| q.split('&')
-                            .filter_map(|param| {
-                                let parts: Vec<&str> = param.split('=').collect();
-                                if parts.len() == 2 {
-                                    Some((parts[0], parts[1]))
-                                } else {
-                                    None
-                                }
+                    &http::Method::GET => {
+                        // 获取 GET 请求的params参数
+                        let uri = req.uri().clone();
+                        let query_params: HashMap<_, _> = uri
+                            .query()
+                            .map(|q| {
+                                q.split('&')
+                                    .filter_map(|param| {
+                                        let parts: Vec<&str> = param.split('=').collect();
+                                        if parts.len() == 2 {
+                                            Some((parts[0], parts[1]))
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect()
                             })
-                            .collect())
-                        .unwrap_or_default();
-    
-                    let peer_id = query_params.get("peer_id").unwrap_or(&"default");
-                    let shard_id = query_params.get("shard_id").unwrap_or(&"default");
-                    // 区分互联网端和警务网
-                    let from = query_params.get("from").unwrap_or(&"internet");
-                    
-                    let records = playback_service.get_records_for_sync(peer_id, shard_id).await?;
-                    // 判断拉取端，如果是互联网端，则需要做数据过滤
-                    let records = if from.eq_ignore_ascii_case("internet") {
-                        let mut filtered_records = Vec::new();
-                        for record in records {
-                            let filtered = if options.http.filter_fields.is_some() {
-                                ONCE_FILTER_CHAIN.read().await.filter(&record)
-                            } else {
-                                Ok(record)
-                            }?;
-                            filtered_records.push(filtered);
-                        }
-                        filtered_records
-                    } else {
-                        records
-                    };
-    
-                    let json = serde_json::to_string(&records)
-                        .map_err(|e| Error::Proxy(format!("Failed to serialize records: {}", e)))?;
-                    
-                    return Ok(Response::builder()
-                        .status(http::StatusCode::OK)
-                        .header("Content-Type", "application/json")
-                        .body(Full::new(Bytes::from(json)))
-                        .unwrap());
-                }
-                &http::Method::POST => {
-                    // 接收并同步记录
-                    let body = req.collect().await?.to_bytes();
-                    let records: Vec<TrafficRecord> = serde_json::from_slice(&body)
-                        .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
-                    
-                    playback_service.sync_from_peer("default", "default", records).await?;
-                    
-                    return Ok(Response::builder()
-                        .status(http::StatusCode::OK)
-                        .body(Full::new(Bytes::from("Sync completed")))
-                        .unwrap());
-                }
-                _ => {
-                    return Ok(Response::builder()
-                        .status(http::StatusCode::METHOD_NOT_ALLOWED)
-                        .body(Full::new(Bytes::from("Method not allowed")))
-                        .unwrap());
+                            .unwrap_or_default();
+
+                        let peer_id = query_params.get("peer_id").unwrap_or(&"default");
+                        let shard_id = query_params.get("shard_id").unwrap_or(&"default");
+                        // 区分互联网端和警务网
+                        let from = query_params.get("from").unwrap_or(&"internet");
+
+                        let records = playback_service
+                            .get_records_for_sync(peer_id, shard_id)
+                            .await?;
+                        // 判断拉取端，如果是互联网端，则需要做数据过滤
+                        let records = if from.eq_ignore_ascii_case("internet") {
+                            let mut filtered_records = Vec::new();
+                            for record in records {
+                                let filtered = if options.http.filter_fields.is_some() {
+                                    ONCE_FILTER_CHAIN.read().await.filter(&record)
+                                } else {
+                                    Ok(record)
+                                }?;
+                                filtered_records.push(filtered);
+                            }
+                            filtered_records
+                        } else {
+                            records
+                        };
+
+                        let json = serde_json::to_string(&records).map_err(|e| {
+                            Error::Proxy(format!("Failed to serialize records: {}", e))
+                        })?;
+
+                        return Ok(Response::builder()
+                            .status(http::StatusCode::OK)
+                            .header("Content-Type", "application/json")
+                            .body(Full::new(Bytes::from(json)))
+                            .unwrap());
+                    }
+                    &http::Method::POST => {
+                        // 接收并同步记录
+                        let body = req.collect().await?.to_bytes();
+                        let records: Vec<TrafficRecord> = serde_json::from_slice(&body)
+                            .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
+
+                        playback_service
+                            .sync_from_peer("default", "default", records)
+                            .await?;
+
+                        return Ok(Response::builder()
+                            .status(http::StatusCode::OK)
+                            .body(Full::new(Bytes::from("Sync completed")))
+                            .unwrap());
+                    }
+                    _ => {
+                        return Ok(Response::builder()
+                            .status(http::StatusCode::METHOD_NOT_ALLOWED)
+                            .body(Full::new(Bytes::from("Method not allowed")))
+                            .unwrap());
                     }
                 }
             } else {
@@ -159,18 +167,19 @@ async fn handle_request(
                     .unwrap());
             }
         }
-        "/metrics" => {     // 返回prometheus metrics
+        "/metrics" => {
+            // 返回prometheus metrics
             let metrics_collector = METRICS_COLLECTOR.lock().await;
             if let Some(metrics_collector) = metrics_collector.as_ref() {
                 let metrics = match metrics_collector.get_metrics().await {
-                        Ok(metrics) => metrics,
-                        Err(e) => e.to_string(),
-                    };
-                    return Ok(Response::builder()
-                        .status(http::StatusCode::OK)
-                        .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                        .body(Full::new(Bytes::from(metrics)))
-                        .unwrap());
+                    Ok(metrics) => metrics,
+                    Err(e) => e.to_string(),
+                };
+                return Ok(Response::builder()
+                    .status(http::StatusCode::OK)
+                    .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+                    .body(Full::new(Bytes::from(metrics)))
+                    .unwrap());
             } else {
                 error!("Metrics collector not initialized");
                 return Ok(Response::builder()
@@ -187,9 +196,9 @@ async fn handle_request(
                     Err(e) => e.to_string(),
                 };
                 return Ok(Response::builder()
-                        .status(http::StatusCode::OK)
-                        .body(Full::new(Bytes::from(health)))
-                        .unwrap());
+                    .status(http::StatusCode::OK)
+                    .body(Full::new(Bytes::from(health)))
+                    .unwrap());
             } else {
                 error!("Metrics collector not initialized");
                 return Ok(Response::builder()
@@ -198,7 +207,8 @@ async fn handle_request(
                     .unwrap());
             }
         }
-        _ => {  // 处理其他请求
+        _ => {
+            // 处理其他请求
             return Ok(Response::builder()
                 .status(http::StatusCode::NOT_FOUND)
                 .body(Full::new(Bytes::from("Not found")))
