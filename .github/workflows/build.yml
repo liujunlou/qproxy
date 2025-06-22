@@ -44,7 +44,10 @@ jobs:
 
     - name: Build release using Docker
       run: |
-        docker run --rm -v "$(pwd)":/app -w /app rust:latest cargo build --release --target ${{ matrix.target }}
+        docker run --rm -v "$(pwd)":/app -w /app rust:latest bash -c "
+          rustup target add ${{ matrix.target }}
+          cargo build --release --target ${{ matrix.target }}
+        "
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
