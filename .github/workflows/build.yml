@@ -31,8 +31,14 @@ jobs:
         target: ${{ matrix.target }}
         override: true
 
-    - name: Install cross
-      run: cargo install cross
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libssl-dev
+        if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+          sudo apt-get install -y libssl-dev:arm64
+        fi
 
     - name: Cache dependencies
       uses: actions/cache@v4
@@ -45,8 +51,8 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-cargo-
 
-    - name: Build release using cross
-      run: cross build --release --target ${{ matrix.target }}
+    - name: Build release
+      run: cargo build --release --target ${{ matrix.target }}
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
