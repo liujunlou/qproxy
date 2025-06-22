@@ -5,8 +5,51 @@ use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::errors::Error;
+use crate::{errors::Error, options::Options};
 use crate::playback::PlaybackService;
+use crate::sync::SyncService;
+use hyper::body::Body;
+use prometheus::{Encoder, TextEncoder};
+use serde_json::json;
+use tracing::{error, info};
+
+pub mod health;
+pub mod sync;
+pub mod metrics;
+pub mod playback;
+
+/// 处理 API 请求
+pub async fn handle_api_request<B>(
+    req: Request<B>,
+    options: Arc<Options>,
+) -> Result<Response<Full<Bytes>>, Error>
+where
+    B: Body,
+{
+    let path = req.uri().path();
+    let method = req.method().as_str();
+
+    match (method, path) {
+        ("GET", "/health") => health::handle_health_check(req).await,
+        ("GET", "/metrics") => metrics::handle_metrics(req).await,
+        ("GET", "/sync") => sync::handle_sync_request(req, options).await,
+        ("POST", "/sync") => sync::handle_sync_request(req, options).await,
+        ("POST", "/playback") => {
+            playback::handle_playback_request(req).await
+        }
+        _ => {
+            let response = json!({
+                "error": "Not Found",
+                "message": "The requested resource was not found"
+            });
+            Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .header("Content-Type", "application/json")
+                .body(Full::new(Bytes::from(response.to_string())))
+                .unwrap())
+        }
+    }
+}
 
 #[allow(dead_code)]
 pub async fn handle_sync_request(

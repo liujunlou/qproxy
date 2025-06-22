@@ -297,32 +297,36 @@ impl MqttClient {
                                         };
 
                                         // 创建 TLS 流
-                                        if let Some(tls) = &options.tcp.tls {
-                                            let tls_config =
-                                                crate::load_tls(&tls.tls_cert, &tls.tls_key);
-                                            let acceptor = TlsAcceptor::from(tls_config);
+                                        if let Some(tcp) = &options.tcp {
+                                            if let Some(tls) = &tcp.tls {
+                                                let tls_config =
+                                                    crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                                let acceptor = TlsAcceptor::from(tls_config);
 
-                                            // 直接调用 handle_tls_proxy
-                                            let options = options.clone();
-                                            tokio::spawn(async move {
-                                                match acceptor.accept(stream).await {
-                                                    Ok(tls_stream) => {
-                                                        if let Err(e) = handle_tls_proxy(
-                                                            TlsStream::Server(tls_stream),
-                                                            options,
-                                                        )
-                                                        .await
-                                                        {
-                                                            error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                // 直接调用 handle_tls_proxy
+                                                let options = options.clone();
+                                                tokio::spawn(async move {
+                                                    match acceptor.accept(stream).await {
+                                                        Ok(tls_stream) => {
+                                                            if let Err(e) = handle_tls_proxy(
+                                                                TlsStream::Server(tls_stream),
+                                                                options,
+                                                            )
+                                                            .await
+                                                            {
+                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("Failed to establish TLS connection: {:?}", e);
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        error!("Failed to establish TLS connection: {:?}", e);
-                                                    }
-                                                }
-                                            });
+                                                });
+                                            } else {
+                                                error!("TLS configuration not found");
+                                            }
                                         } else {
-                                            error!("TLS configuration not found");
+                                            error!("TCP configuration not found");
                                         }
                                     }
                                 }
@@ -396,32 +400,36 @@ impl MqttClient {
                                         };
 
                                         // 创建 TLS 流
-                                        if let Some(tls) = &options.tcp.tls {
-                                            let tls_config =
-                                                crate::load_tls(&tls.tls_cert, &tls.tls_key);
-                                            let acceptor = TlsAcceptor::from(tls_config);
+                                        if let Some(tcp) = &options.tcp {
+                                            if let Some(tls) = &tcp.tls {
+                                                let tls_config =
+                                                    crate::load_tls(&tls.tls_cert, &tls.tls_key);
+                                                let acceptor = TlsAcceptor::from(tls_config);
 
-                                            // 直接调用 handle_tls_proxy
-                                            let options = options.clone();
-                                            tokio::spawn(async move {
-                                                match acceptor.accept(stream).await {
-                                                    Ok(tls_stream) => {
-                                                        if let Err(e) = handle_tls_proxy(
-                                                            TlsStream::Server(tls_stream),
-                                                            options,
-                                                        )
-                                                        .await
-                                                        {
-                                                            error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                // 直接调用 handle_tls_proxy
+                                                let options = options.clone();
+                                                tokio::spawn(async move {
+                                                    match acceptor.accept(stream).await {
+                                                        Ok(tls_stream) => {
+                                                            if let Err(e) = handle_tls_proxy(
+                                                                TlsStream::Server(tls_stream),
+                                                                options,
+                                                            )
+                                                            .await
+                                                            {
+                                                                error!("Failed to handle TLS proxy for MQTT message: {:?}", e);
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            error!("Failed to establish TLS connection: {:?}", e);
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        error!("Failed to establish TLS connection: {:?}", e);
-                                                    }
-                                                }
-                                            });
+                                                });
+                                            } else {
+                                                error!("TLS configuration not found");
+                                            }
                                         } else {
-                                            error!("TLS configuration not found");
+                                            error!("TCP configuration not found");
                                         }
                                     }
                                 }

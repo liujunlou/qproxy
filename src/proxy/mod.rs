@@ -26,25 +26,36 @@ impl ProxyServer {
         let tcp_server = self.options.clone();
         let grpc_server = self.options.clone();
 
-        // 启动 HTTP 和 TCP 代理服务器
+        let mut handles = Vec::new();
+        // 启动 HTTP 和 TCP 和 gRPC 代理服务器
         let http_handle = tokio::spawn(async move {
             if let Err(e) = self::http::start_server(http_server.clone()).await {
                 error!("HTTP server failed to start: {}", e);
                 std::process::exit(1);
             }
         });
-        let tcp_handle = tokio::spawn(async move {
-            if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
-                error!("TCP server failed to start: {}", e);
+        handles.push(http_handle);
+
+
+        if let Some(tcp) = &self.options.tcp {
+            let tcp_handle = tokio::spawn(async move {
+                if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
+                    error!("TCP server failed to start: {}", e);
                 std::process::exit(1);
-            }
-        });
-        let grpc_handle = tokio::spawn(async move {
-            if let Err(e) = self::grpc::start_server(grpc_server.clone()).await {
-                error!("gRPC server failed to start: {}", e);
-                std::process::exit(1);
-            }
-        });
+                }
+            });
+            handles.push(tcp_handle);
+        }
+
+        if let Some(grpc) = &self.options.grpc {
+            let grpc_handle = tokio::spawn(async move {
+                if let Err(e) = self::grpc::start_server(grpc_server.clone()).await {
+                    error!("gRPC server failed to start: {}", e);
+                    std::process::exit(1);
+                }
+            });
+            handles.push(grpc_handle);
+        }
 
         // 添加 HTTP 代理服务器的过滤器
         ONCE_FILTER_CHAIN
@@ -54,7 +65,7 @@ impl ProxyServer {
                 self.options.http.filter_fields.clone(),
             )));
 
-        vec![http_handle, tcp_handle, grpc_handle]
+        handles
     }
 }
 

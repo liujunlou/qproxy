@@ -17,8 +17,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use clap::Parser;
 use qproxy::{
-    errors::Error, get_shutdown_rx, logger, options::Options, send_shutdown_signal, start_qproxy,
+    errors::Error, logger, options::Options, send_shutdown_signal, start_qproxy,
 };
 use rustls::{
     pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer},
@@ -27,6 +28,23 @@ use rustls::{
 use tokio::signal;
 use tokio::time::timeout;
 use tracing::{error, info, warn};
+
+/// QProxy - 支持流量录制和回放的代理服务器
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// 配置文件路径
+    #[arg(short, long, default_value = "config.json")]
+    config: String,
+    
+    /// 日志级别
+    #[arg(short, long, default_value = "info")]
+    log_level: String,
+    
+    /// 显示详细输出
+    #[arg(short, long)]
+    verbose: bool,
+}
 
 /// 程序入口函数
 ///
@@ -37,11 +55,27 @@ use tracing::{error, info, warn};
 /// - 服务器启动失败
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    // 解析命令行参数
+    let args = Args::parse();
+    
+    // 设置环境变量以传递配置文件路径
+    std::env::set_var("CONFIG_PATH", &args.config);
+    
+    // 如果指定了详细输出，设置更详细的日志级别
+    if args.verbose {
+        std::env::set_var("RUST_LOG", "debug");
+    } else {
+        std::env::set_var("RUST_LOG", &args.log_level);
+    }
+    
+    info!("Starting QProxy with config: {}", args.config);
+    info!("Log level: {}", args.log_level);
+
     // 加载配置
     let options = match Options::new() {
         Ok(opts) => opts,
         Err(e) => {
-            error!("Failed to load configuration: {}", e);
+            error!("Failed to load configuration from {}: {}", args.config, e);
             return Err(e);
         }
     };

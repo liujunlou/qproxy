@@ -1,5 +1,5 @@
 use crate::{
-    client::grpc_client::GrpcClient, errors::Error, get_shutdown_rx, model::{Protocol, TrafficRecord}, SERVICE_REGISTRY
+    client::grpc_client::{get_grpc_client, GrpcClient}, errors::Error, get_shutdown_rx, model::{Protocol, TrafficRecord}, SERVICE_REGISTRY
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -9,6 +9,7 @@ use hyper_util::{
     client::legacy::{Builder, Client},
     rt::TokioExecutor,
 };
+use prost::Message;
 use redis::{aio::ConnectionManager, AsyncCommands};
 use route::RouteMessage;
 use serde::{Deserialize, Serialize};
@@ -384,7 +385,7 @@ impl PlaybackService {
         Ok(result)
     }
 
-    /// 添加新的流量记录
+    /// 添加新的流量记录到Redis缓存队列
     ///
     /// # 参数
     /// * `record` - 要添加的流量记录
@@ -395,18 +396,6 @@ impl PlaybackService {
 
         let mut conn = self.redis_pool.as_ref().clone();
         conn.zadd(&key, &json, score).await?;
-
-        // 发送新流量通知, 触发回放
-        if let Err(e) = self
-            .notify_tx
-            .lock()
-            .await
-            .send(record.peer_id.clone())
-            .await
-        {
-            error!("Failed to send traffic notification: {}", e);
-        }
-
         Ok(())
     }
 
@@ -865,8 +854,13 @@ impl PlaybackService {
                             }
                         }
                         Protocol::GRPC => {
-                            // TODO 这里完成 MQTT connect和流量回放，复用连接
-                            return Ok(vec![]);
+                            // 这里完成 MQTT connect和流量回放，复用连接
+                            let mut client = get_grpc_client(&addr).await?;
+                            let route_message = RouteMessage::decode(&mut &record.request.body[..])
+                                .map_err(|_| Error::GrpcStatus(format!("Failed to decode RouteMessage {:?}", record.request.body)))?;
+                            let request = tonic::Request::new(route_message);
+                            let response = client.call(request).await?;
+                            return Ok(response.get_ref().payload.clone());
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
                             let scheme = if record.protocol == Protocol::HTTPS {
@@ -1011,6 +1005,7 @@ impl PlaybackService {
         for record in &records_to_replay {
             info!("Replaying traffic record: {}", record.id);
             if let Err(e) = self.trigger_replay(record).await {
+                // 将回放失败的记录写入列表进行重试
                 error!("Failed to replay traffic record: {}", e);
                 failed_records.push(record.id.clone());
             }

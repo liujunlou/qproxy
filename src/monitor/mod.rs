@@ -43,10 +43,73 @@ lazy_static::lazy_static! {
         "qproxy_network_io_gauge",
         "The current network IO of qproxy"
     ).expect("Failed to register network IO gauge");
+
     pub static ref NETWORK_CONNECTIONS_GAUGE: Gauge = register_gauge!(
         "qproxy_network_connections_gauge",
         "The current number of network connections of qproxy"
     ).expect("Failed to register network connections gauge");
+
+    // HTTP 服务端监控指标
+    pub static ref HTTP_REQUESTS_TOTAL: Counter = register_counter!(
+        "http_requests_total",
+        "Total number of HTTP requests"
+    ).expect("Failed to register HTTP requests counter");
+
+    pub static ref HTTP_REQUEST_DURATION: Histogram = register_histogram!(
+        "http_request_duration_seconds",
+        "HTTP request duration in seconds"
+    ).expect("Failed to register HTTP request duration histogram");
+
+    pub static ref HTTP_ACTIVE_CONNECTIONS: Gauge = register_gauge!(
+        "http_active_connections",
+        "Number of active HTTP connections"
+    ).expect("Failed to register HTTP active connections gauge");
+
+    pub static ref HTTP_REQUEST_SIZE: Histogram = register_histogram!(
+        "http_request_size_bytes",
+        "HTTP request size in bytes"
+    ).expect("Failed to register HTTP request size histogram");
+
+    pub static ref HTTP_RESPONSE_SIZE: Histogram = register_histogram!(
+        "http_response_size_bytes",
+        "HTTP response size in bytes"
+    ).expect("Failed to register HTTP response size histogram");
+
+    pub static ref HTTP_ERRORS_TOTAL: Counter = register_counter!(
+        "http_errors_total",
+        "Total number of HTTP errors"
+    ).expect("Failed to register HTTP errors counter");
+
+    // gRPC 监控指标
+    pub static ref GRPC_REQUESTS_TOTAL: Counter = register_counter!(
+        "grpc_requests_total",
+        "Total number of gRPC requests"
+    ).expect("Failed to register gRPC requests counter");
+
+    pub static ref GRPC_REQUEST_DURATION: Histogram = register_histogram!(
+        "grpc_request_duration_seconds",
+        "gRPC request duration in seconds"
+    ).expect("Failed to register gRPC request duration histogram");
+
+    pub static ref GRPC_ACTIVE_CONNECTIONS: Gauge = register_gauge!(
+        "grpc_active_connections",
+        "Number of active gRPC connections"
+    ).expect("Failed to register gRPC active connections gauge");
+
+    pub static ref GRPC_REQUEST_SIZE: Histogram = register_histogram!(
+        "grpc_request_size_bytes",
+        "gRPC request size in bytes"
+    ).expect("Failed to register gRPC request size histogram");
+
+    pub static ref GRPC_RESPONSE_SIZE: Histogram = register_histogram!(
+        "grpc_response_size_bytes",
+        "gRPC response size in bytes"
+    ).expect("Failed to register gRPC response size histogram");
+
+    pub static ref GRPC_ERRORS_TOTAL: Counter = register_counter!(
+        "grpc_errors_total",
+        "Total number of gRPC errors"
+    ).expect("Failed to register gRPC errors counter");
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

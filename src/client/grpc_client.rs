@@ -1,9 +1,13 @@
-
 // 引入生成的 proto 代码
 // mod route {
 //     include!(concat!(env!("OUT_DIR"), "/route.rs"));
 // }
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use once_cell::sync::Lazy;
+use tokio::sync::RwLock;
 // use route::route_service_client::RouteServiceClient;
 // use route::RouteMessage;
 // use route::RouteResponse;
@@ -16,6 +20,26 @@ use crate::playback::route::route_service_client::RouteServiceClient;
 use crate::playback::route::RouteMessage;
 use crate::playback::route::RouteResponse;
 
+pub static GRPC_CLIENT_POOL: Lazy<Arc<RwLock<HashMap<String, GrpcClient>>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+
+pub async fn get_grpc_client(addr: &str) -> Result<GrpcClient, Error> {
+    {
+        let pool = GRPC_CLIENT_POOL.read().await;
+        if let Some(client) = pool.get(addr) {
+            return Ok((*client).clone());
+        }
+    }
+    
+    GRPC_CLIENT_POOL.write().await.insert(addr.to_string(), GrpcClient::new(addr).await?);
+    
+    let pool = GRPC_CLIENT_POOL.read().await;
+    match pool.get(addr) {
+        Some(client) => Ok((*client).clone()),
+        None => Err(Error::GrpcStatus("Failed to get client".to_string())),
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct GrpcClient {
     client: RouteServiceClient<Channel>,
 }

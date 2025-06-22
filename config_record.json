@@ -1,52 +1,37 @@
 {
+    "mode": "Record",
     "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": ["http://localhost:9080"]
+    },
+    "grpc": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8081,
+        "downstream": ["localhost:9081"]
     },
     "tcp": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
-        "downstream": ["localhost:8083"],
+        "downstream": ["localhost:9082"],
         "tls": {
-            "tls_cert": "cert.pem",
-            "tls_key": "key.pem"
+            "tls_cert": "/Users/mr.xi/workspace/logs/rsa/cert.pem",
+            "tls_key": "/Users/mr.xi/workspace/logs/rsa/private_key.pem"
         }
     },
-    "mode": "Record",
     "sync": {
         "enabled": false,
-        "shards": 1
-    },
-    "peer": {
-        "host": "127.0.0.1",
-        "port": 8084,
-        "tls": true
+        "shards": 1,
+        "interval": 1000,
+        "peer": null
     },
     "redis": {
         "url": "redis://default:mr.xi9999@localhost:6379",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3
-    },
-    "logging": {
-        "level": "info",
-        "directory": "logs",
-        "file_name_pattern": "qproxy_",
-        "rotation": {
-            "max_size_mb": 100,
-            "max_files": 10,
-            "compress": true
-        },
-        "format": {
-            "timestamp": true,
-            "level": true,
-            "target": true,
-            "thread_id": true,
-            "file": true,
-            "line_number": true
-        }
     },
     "service_discovery": {
         "provider": "static",
@@ -71,14 +56,32 @@
                     }
                 }
             ],
-            "consul": {
-                "address": "localhost:8500",
-                "datacenter": "dc1"
+            "zookeeper": {
+                "address": "localhost:2181",
+                "base_path": "/qproxy"
             },
             "kubernetes": {
                 "namespace": "default",
                 "service_account_token": null
             }
+        }
+    },
+    "logging": {
+        "level": "info",
+        "directory": "logs",
+        "file_name_pattern": "qproxy_",
+        "rotation": {
+            "max_size_mb": 100,
+            "max_files": 10,
+            "compress": true
+        },
+        "format": {
+            "timestamp": true,
+            "level": true,
+            "target": true,
+            "thread_id": true,
+            "file": true,
+            "line_number": true
         }
     }
 } 

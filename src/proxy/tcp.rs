@@ -16,10 +16,16 @@ use crate::{
 };
 
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
-    let addr = format!("{}:{}", options.tcp.host, options.tcp.port);
+    let tcp_opts = if let Some(tcp) = &options.tcp {
+        tcp
+    } else {
+        return Err(Error::Config("TCP options not found".to_string()));
+    };
+
+    let addr = format!("{}:{}", tcp_opts.host, tcp_opts.port);
     let addr = SocketAddr::from_str(&addr).expect("invalid socket address");
     let listener = TcpListener::bind(addr).await?;
-    info!("TCP proxy server listening on {}", addr);
+    info!("TCP proxy server listening on {}", listener.local_addr().unwrap());
 
     let mut shutdown_rx = get_shutdown_rx().await;
 
@@ -31,7 +37,7 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
                         info!("New TCP connection from {}", addr);
                         let options = options.clone();
 
-                        if let Some(tls) = &options.tcp.tls {
+                        if let Some(tls) = &tcp_opts.tls {
                             // 创建TLS接受器
                             let tls_config = load_tls(&tls.tls_cert, &tls.tls_key);
                             let acceptor = TlsAcceptor::from(tls_config);
@@ -116,7 +122,13 @@ where
                         // 1. 将流量包装成 TrafficRecord 对象
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // TODO 优化http客户端，通过客户端池进行复用
-                        let downstream_addr = &options.tcp.downstream;
+                        let tcp_opts = if let Some(tcp) = &options.tcp {
+                            tcp
+                        } else {
+                            return Err(Error::Config("TCP options not found".to_string()));
+                        };
+
+                        let downstream_addr = &tcp_opts.downstream;
                         if downstream_addr.is_empty() {
                             error!("No downstream address configured");
                             return Err(Error::Config(
@@ -196,7 +208,13 @@ async fn handle_proxy(inbound: TcpStream, options: Arc<Options>) -> Result<(), E
                         // 1. 将流量包装成 TrafficRecord 对象
                         let record = TrafficRecord::new_tcp("CMP", buffer[..n].to_vec(), vec![]);
                         // TODO 优化http客户端，通过客户端池进行复用
-                        let downstream_addr = &options.tcp.downstream;
+                        let tcp_opts = if let Some(tcp) = &options.tcp {
+                            tcp
+                        } else {
+                            return Err(Error::Config("TCP options not found".to_string()));
+                        };
+
+                        let downstream_addr = &tcp_opts.downstream;
                         if downstream_addr.is_empty() {
                             error!("No downstream address configured");
                             return Err(Error::Config(

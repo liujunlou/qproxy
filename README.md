@@ -23,25 +23,47 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ### Record 节点配置示例：
 ```json
 {
-    "mode": "Record",
-    "http": {
+    "mode": "Record",                       // 节点模式，录制节点用于公安网
+    "http": {                               // http代理服务器，downstream为代理下游地址
         "host": "127.0.0.1",
         "port": 8080,
         "downstream": "http://localhost:8081"
     },
-    "tcp": {
+    "grpc": {                               // grpc代理服务器，downstream为代理下游地址
         "enabled": true,
         "host": "127.0.0.1",
-        "port": 8082,
-        "downstream": ["localhost:8083"],
-        "tls": {
-            "tls_cert": "cert.pem",
-            "tls_key": "key.pem"
+        "port": 8081,
+        "downstream": ["localhost:9081"]
+    },
+    "tcp": nill,
+    "sync": {                               // 同步服务配置，仅在回放节点开启，来拉取待回放流量
+        "enabled": false,
+        "shards": 1,
+        "interval": 1000,
+        "peer": null,
+    },
+    "redis": {                               // redis服务配置
+        "url": "redis://username:password@localhost:6379",
+        "pool_size": 10,
+        "connection_timeout": 5,
+        "retry_count": 3
+    },
+    "service_discovery": {                   // 当前可用区的服务发现模块，用于回放真实流量
+        "provider": "static",
+        "config": {
+            "static_services": [],
+            "zookeeper": {
+                "address": "localhost:2181",
+                "base_path": "/qproxy"
+            },
+            "kubernetes": {
+                "namespace": "default",
+                "service_account_token": null
+            }
         }
     },
-    "redis": {
-        "url": "redis://localhost:6379",
-        "pool_size": 10
+    "logging": {                             // 日志配置
+      // ...
     }
 }
 ```
@@ -49,30 +71,50 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ### Playback 节点配置示例：
 ```json
 {
-    "mode": "Playback",
-    "http": {
+    "mode": "Playback",                       // 节点模式，回放节点用于警务网、互联网
+    "http": {                                 // http代理服务器，downstream为代理下游地址
         "host": "127.0.0.1",
         "port": 8080,
         "downstream": "http://localhost:8081"
     },
-    "tcp": {
+    "grpc": {                                 // grpc代理服务器，downstream为代理下游地址
         "enabled": true,
         "host": "127.0.0.1",
-        "port": 8082,
-        "downstream": ["localhost:8083"],
-        "tls": {
-            "tls_cert": "cert.pem",
-            "tls_key": "key.pem"
+        "port": 8081,
+        "downstream": ["localhost:9081"]
+    },
+    "tcp": null,
+    "sync": {                                 // 同步服务配置，仅在回放节点开启，来拉取待回放流量
+        "enabled": false,
+        "shards": 1
+        "peer": {
+            "host": "127.0.0.1",
+            "port": 8084,
+            "tls": true
+        },
+    },
+    "redis": {                               // redis服务配置
+        "url": "redis://username:password@localhost:6379",
+        "pool_size": 10,
+        "connection_timeout": 5,
+        "retry_count": 3
+    },
+    "service_discovery": {                   // 当前可用区的服务发现模块，用于回放真实流量
+        "provider": "static",
+        "config": {
+            "static_services": [],
+            "zookeeper": {
+                "address": "localhost:2181",
+                "base_path": "/qproxy"
+            },
+            "kubernetes": {
+                "namespace": "default",
+                "service_account_token": null
+            }
         }
     },
-    "peer": {
-        "host": "record-node-host",
-        "port": 8084,
-        "tls": true
-    },
-    "sync": {
-        "enabled": true,
-        "interval": 60
+    "logging": {                             // 日志配置
+      // ...
     }
 }
 ```
@@ -107,12 +149,44 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 
 3. 运行服务：
    ```bash
-   # 使用默认配置文件
+   # 使用默认配置文件 (config.json)
    ./target/release/qproxy
 
    # 使用指定配置文件
-   CONFIG_PATH=/path/to/config.json ./target/release/qproxy
+   ./target/release/qproxy --config /path/to/config.json
+   ./target/release/qproxy -c /path/to/config.json
+
+   # 指定日志级别
+   ./target/release/qproxy --log-level debug
+   ./target/release/qproxy -l debug
+
+   # 显示详细输出
+   ./target/release/qproxy --verbose
+   ./target/release/qproxy -v
+
+   # 组合使用
+   ./target/release/qproxy -c /path/to/config.json -l debug -v
+
+   # 查看帮助信息
+   ./target/release/qproxy --help
    ```
+
+4. 命令行参数说明：
+   - `-c, --config <FILE>`: 指定配置文件路径 (默认: config.json)
+   - `-l, --log-level <LEVEL>`: 设置日志级别 (默认: info)
+   - `-v, --verbose`: 显示详细输出
+   - `-h, --help`: 显示帮助信息
+   - `-V, --version`: 显示版本信息
+
+5. 环境变量：
+   ```bash
+   # 使用环境变量指定配置文件
+   CONFIG_PATH=/path/to/config.json ./target/release/qproxy
+   
+   # 使用环境变量设置日志级别
+   RUST_LOG=debug ./target/release/qproxy
+   ```
+
 4. API接口
    ```
    # 拉取同步记录
@@ -322,6 +396,22 @@ GET /health
   - 总体回放错误率
   - 按错误类型统计
 
+#### HTTP 监控指标
+- `http_requests_total` - HTTP 请求总数
+- `http_request_duration_seconds` - HTTP 请求处理时间
+- `http_active_connections` - 活跃 HTTP 连接数
+- `http_request_size_bytes` - HTTP 请求大小
+- `http_response_size_bytes` - HTTP 响应大小
+- `http_errors_total` - HTTP 错误总数
+
+#### gRPC 监控指标
+- `grpc_requests_total` - gRPC 请求总数
+- `grpc_request_duration_seconds` - gRPC 请求处理时间
+- `grpc_active_connections` - 活跃 gRPC 连接数
+- `grpc_request_size_bytes` - gRPC 请求大小
+- `grpc_response_size_bytes` - gRPC 响应大小
+- `grpc_errors_total` - gRPC 错误总数
+
 ### 2. 业务指标
 
 #### Record 节点
@@ -388,6 +478,36 @@ GET /health
    - CPU 使用率超过 80%
    - 内存使用率超过 85%
    - 磁盘使用率超过 90%
+
+### 访问监控指标
+
+QProxy 提供了完整的监控功能，支持 HTTP 和 gRPC 服务端监控。启动服务后，可以通过以下方式访问监控指标：
+
+```bash
+# 获取 Prometheus 格式的指标
+curl http://localhost:8080/metrics
+
+# 健康检查
+curl http://localhost:8080/health
+```
+
+### 监控集成
+
+监控数据可以集成到 Prometheus + Grafana 监控栈中：
+
+1. **Prometheus 配置**：
+```yaml
+scrape_configs:
+  - job_name: 'qproxy'
+    static_configs:
+      - targets: ['localhost:8080']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+```
+
+2. **Grafana 仪表板**：
+   - 创建仪表板显示请求量、响应时间、错误率等关键指标
+   - 设置告警规则监控服务健康状况
 
 ## 性能优化
 

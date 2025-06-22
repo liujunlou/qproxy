@@ -58,7 +58,7 @@ impl SyncService {
                     error!("Sync error: {}", e);
                 }
                 // 每60秒同步一次
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(options.sync.interval)).await;
             }
         })
     }
@@ -75,7 +75,7 @@ impl SyncService {
         options: &Arc<Options>,
         client: &Arc<Client>,
     ) -> Result<(), Error> {
-        if let Some(peer) = &options.peer {
+        if let Some(peer) = &options.sync.peer {
             if !options.sync.enabled {
                 return Ok(());
             }

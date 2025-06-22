@@ -1,25 +1,27 @@
-use std::collections::HashMap;
-use std::{net::SocketAddr, str::FromStr, sync::Arc};
+use std::{net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use http::{Request, Response};
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::{server::conn::http1, service::service_fn};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
 use crate::{
-    errors::Error, model::TrafficRecord, options::Options, METRICS_COLLECTOR, PLAYBACK_SERVICE,
+    errors::Error, options::Options,
 };
-use crate::{get_shutdown_rx, ONCE_FILTER_CHAIN};
+use crate::{api, get_shutdown_rx};
+use crate::monitor::{HTTP_ACTIVE_CONNECTIONS, HTTP_ERRORS_TOTAL, HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION, HTTP_REQUEST_SIZE, HTTP_RESPONSE_SIZE};
+use std::time::Instant;
 
 // 启动http服务端
 pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
-    let addr = format!("{}:{}", options.http.host, options.http.port);
-    let addr = SocketAddr::from_str(&addr).expect("invalid socket address");
+    let addr = format!("{}:{}", options.http.host, options.http.port)
+        .parse::<SocketAddr>()
+        .map_err(|e| Error::Config(e.to_string()))?;
     let listener = TcpListener::bind(addr).await?;
-    info!("HTTP proxy server started at {}", addr);
+    info!("HTTP proxy server listening on {}", addr);
 
     let mut shutdown_rx = get_shutdown_rx().await;
 
@@ -42,7 +44,13 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
                                     service_fn(move |req| {
                                         let options = options.clone();
                                         async move {
-                                            handle_request(req, options).await
+                                            let start_time = Instant::now();
+                                            let result = api::handle_api_request(req, options).await;
+                                            
+                                            // 记录请求完成
+                                            HttpMetricsMiddleware::record_request_complete(start_time, &result);
+                                            
+                                            result
                                         }
                                     }),
                                 )
@@ -72,145 +80,51 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     Ok(())
 }
 
-async fn handle_request(
-    req: Request<hyper::body::Incoming>,
-    options: Arc<Options>,
-) -> Result<Response<Full<Bytes>>, Error> {
-    // 处理同步请求
-    match req.uri().path() {
-        "/sync" => {
-            let playback_service = PLAYBACK_SERVICE.read().await;
-            if let Some(playback_service) = playback_service.as_ref() {
-                match req.method() {
-                    // 获取需要同步的记录
-                    &http::Method::GET => {
-                        // 获取 GET 请求的params参数
-                        let uri = req.uri().clone();
-                        let query_params: HashMap<_, _> = uri
-                            .query()
-                            .map(|q| {
-                                q.split('&')
-                                    .filter_map(|param| {
-                                        let parts: Vec<&str> = param.split('=').collect();
-                                        if parts.len() == 2 {
-                                            Some((parts[0], parts[1]))
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                    .collect()
-                            })
-                            .unwrap_or_default();
+/// HTTP 监控中间件
+pub struct HttpMetricsMiddleware;
 
-                        let peer_id = query_params.get("peer_id").unwrap_or(&"default");
-                        let shard_id = query_params.get("shard_id").unwrap_or(&"default");
-                        // 区分互联网端和警务网
-                        let from = query_params.get("from").unwrap_or(&"internet");
+impl HttpMetricsMiddleware {
+    /// 记录请求开始
+    pub fn record_request_start(req: &Request<hyper::body::Incoming>) {
+        // 增加活跃连接数
+        HTTP_ACTIVE_CONNECTIONS.inc();
+        
+        // 记录请求大小（如果有 Content-Length 头）
+        if let Some(content_length) = req.headers().get("content-length") {
+            if let Ok(size) = content_length.to_str().unwrap_or("0").parse::<f64>() {
+                HTTP_REQUEST_SIZE.observe(size);
+            }
+        }
+    }
 
-                        let records = playback_service
-                            .get_records_for_sync(peer_id, shard_id)
-                            .await?;
-                        // 判断拉取端，如果是互联网端，则需要做数据过滤
-                        let records = if from.eq_ignore_ascii_case("internet") {
-                            let mut filtered_records = Vec::new();
-                            for record in records {
-                                let filtered = if options.http.filter_fields.is_some() {
-                                    ONCE_FILTER_CHAIN.read().await.filter(&record)
-                                } else {
-                                    Ok(record)
-                                }?;
-                                filtered_records.push(filtered);
-                            }
-                            filtered_records
-                        } else {
-                            records
-                        };
+    /// 记录请求完成
+    pub fn record_request_complete(
+        start_time: Instant,
+        result: &Result<Response<Full<Bytes>>, Error>,
+    ) {
+        // 记录请求处理时间
+        let duration = start_time.elapsed().as_secs_f64();
+        HTTP_REQUEST_DURATION.observe(duration);
 
-                        let json = serde_json::to_string(&records).map_err(|e| {
-                            Error::Proxy(format!("Failed to serialize records: {}", e))
-                        })?;
-
-                        return Ok(Response::builder()
-                            .status(http::StatusCode::OK)
-                            .header("Content-Type", "application/json")
-                            .body(Full::new(Bytes::from(json)))
-                            .unwrap());
-                    }
-                    &http::Method::POST => {
-                        // 接收并同步记录
-                        let body = req.collect().await?.to_bytes();
-                        let record: TrafficRecord = serde_json::from_slice(&body)
-                            .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
-
-                        // 返回透传的真实响应数据
-                        let response = playback_service.sync_from_peer(record.clone()).await?;
-
-                        return Ok(Response::builder()
-                            .status(http::StatusCode::OK)
-                            .body(Full::new(Bytes::from(response.clone())))
-                            .unwrap());
-                    }
-                    _ => {
-                        return Ok(Response::builder()
-                            .status(http::StatusCode::METHOD_NOT_ALLOWED)
-                            .body(Full::new(Bytes::from("Method not allowed")))
-                            .unwrap());
+        // 记录请求结果
+        match result {
+            Ok(response) => {
+                HTTP_REQUESTS_TOTAL.inc();
+                
+                // 记录响应大小
+                if let Some(content_length) = response.headers().get("content-length") {
+                    if let Ok(size) = content_length.to_str().unwrap_or("0").parse::<f64>() {
+                        HTTP_RESPONSE_SIZE.observe(size);
                     }
                 }
-            } else {
-                error!("Playback service not initialized");
-                return Ok(Response::builder()
-                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::new(Bytes::from("Playback service not initialized")))
-                    .unwrap());
+            }
+            Err(_) => {
+                HTTP_REQUESTS_TOTAL.inc();
+                HTTP_ERRORS_TOTAL.inc();
             }
         }
-        "/metrics" => {
-            // 返回prometheus metrics
-            let metrics_collector = METRICS_COLLECTOR.lock().await;
-            if let Some(metrics_collector) = metrics_collector.as_ref() {
-                let metrics = match metrics_collector.get_metrics().await {
-                    Ok(metrics) => metrics,
-                    Err(e) => e.to_string(),
-                };
-                return Ok(Response::builder()
-                    .status(http::StatusCode::OK)
-                    .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-                    .body(Full::new(Bytes::from(metrics)))
-                    .unwrap());
-            } else {
-                error!("Metrics collector not initialized");
-                return Ok(Response::builder()
-                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::new(Bytes::from("Metrics collector not initialized")))
-                    .unwrap());
-            }
-        }
-        "/health" => {
-            let metrics_collector = METRICS_COLLECTOR.lock().await;
-            if let Some(metrics_collector) = metrics_collector.as_ref() {
-                let health = match metrics_collector.get_health().await {
-                    Ok(health) => health,
-                    Err(e) => e.to_string(),
-                };
-                return Ok(Response::builder()
-                    .status(http::StatusCode::OK)
-                    .body(Full::new(Bytes::from(health)))
-                    .unwrap());
-            } else {
-                error!("Metrics collector not initialized");
-                return Ok(Response::builder()
-                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                    .body(Full::new(Bytes::from("Metrics collector not initialized")))
-                    .unwrap());
-            }
-        }
-        _ => {
-            // 处理其他请求
-            return Ok(Response::builder()
-                .status(http::StatusCode::NOT_FOUND)
-                .body(Full::new(Bytes::from("Not found")))
-                .unwrap());
-        }
+
+        // 减少活跃连接数
+        HTTP_ACTIVE_CONNECTIONS.dec();
     }
 }

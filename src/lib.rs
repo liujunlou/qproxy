@@ -54,8 +54,8 @@ pub static SERVICE_REGISTRY: Lazy<Arc<RwLock<ServiceRegistry>>> =
 
 /// 全局共享的指标监控实例
 /// 使用 once_cell 确保单例模式和线程安全
-pub static METRICS_COLLECTOR: Lazy<Arc<Mutex<Option<Arc<MetricsCollectorTask>>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(None)));
+pub static METRICS_COLLECTOR: Lazy<Arc<RwLock<Option<Arc<MetricsCollectorTask>>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(None)));
 
 // 提供静态的 FilterChain 实例，支持多线程下使用
 pub static ONCE_FILTER_CHAIN: Lazy<Arc<RwLock<FilterChain>>> =
@@ -120,7 +120,7 @@ pub async fn start_qproxy(options: &Options) -> Result<Vec<JoinHandle<()>>, Erro
 ///
 /// 返回指标监控任务
 async fn start_metrics_collector(opts: &Options) -> Result<(), Error> {
-    let mut collector = METRICS_COLLECTOR.lock().await;
+    let mut collector = METRICS_COLLECTOR.write().await;
     if collector.is_none() {
         let metrics_collector_task = MetricsCollectorTask::new(opts);
         *collector = Some(Arc::new(metrics_collector_task));

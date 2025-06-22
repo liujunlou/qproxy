@@ -10,14 +10,41 @@ use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info};
+use std::time::Instant;
 
 use crate::errors::Error;
 use crate::model::TrafficRecord;
+use crate::monitor::{GRPC_ACTIVE_CONNECTIONS, GRPC_ERRORS_TOTAL, GRPC_REQUESTS_TOTAL, GRPC_REQUEST_DURATION, GRPC_REQUEST_SIZE, GRPC_RESPONSE_SIZE};
 use crate::options::{Options, ProxyMode};
 use crate::PLAYBACK_SERVICE;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+
+/// 启动 gRPC 服务器
+pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
+    let addr = if let Some(grpc_opts) = &opts.grpc {
+        if !grpc_opts.enabled {
+            return Err(Error::Config("grpc is not enabled".to_string()));
+        }
+        let addr = format!("{}:{}", grpc_opts.host, grpc_opts.port);
+        addr.parse::<std::net::SocketAddr>()
+            .map_err(|e| Error::Config(e.to_string()))?
+    } else {
+        return Err(Error::Config("grpc options not found".to_string()));
+    };
+
+    let route_service = RouteServiceImpl::new(opts.clone());
+    Server::builder()
+        .add_service(RouteServiceServer::new(route_service))
+        .serve(addr)
+        .await
+        .map_err(|e| Error::Proxy(e.to_string()))?;
+    
+    info!("gRPC server started at {}", addr);
+    Ok(())
+}
+
 #[derive(Debug)]
 pub struct RouteServiceImpl {
     options: Arc<Options>,
@@ -39,6 +66,26 @@ impl RouteServiceImpl {
 #[async_trait::async_trait]
 impl RouteService for RouteServiceImpl {
     async fn send_message(
+        &self,
+        request: Request<RouteMessage>,
+    ) -> Result<Response<RouteResponse>, Status> {
+        let start_time = Instant::now();
+        let method = "send_message";
+        
+        // 记录请求开始
+        GrpcMetricsMiddleware::record_request_start(&request);
+
+        let result = self.handle_send_message(request).await;
+
+        // 记录请求完成
+        GrpcMetricsMiddleware::record_request_complete(start_time, &result);
+
+        result
+    }
+}
+
+impl RouteServiceImpl {
+    async fn handle_send_message(
         &self,
         request: Request<RouteMessage>,
     ) -> Result<Response<RouteResponse>, Status> {
@@ -74,14 +121,14 @@ impl RouteService for RouteServiceImpl {
             // 将消息透传到公安网服务节点
             ProxyMode::Playback => {
                 // TODO 优化http客户端，通过客户端池进行复用
-                let downstream_addr = &self.options.tcp.downstream;
-                if downstream_addr.is_empty() {
-                    error!("No downstream address configured");
+                let downstream_addr = if let Some(grpc_opts) = &self.options.grpc {
+                    grpc_opts.downstream.clone()
+                } else {
                     return Err(Status::new(
                         Code::NotFound,
-                        "No downstream address configured".to_string(),
+                        "No grpc downstream address configured".to_string(),
                     ));
-                }
+                };
 
                 // 选择第一个下游地址，这里创建一个共享池来提供http客户端访问下游地址
                 let index = self.index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % downstream_addr.len();
@@ -101,7 +148,7 @@ impl RouteService for RouteServiceImpl {
                 let response = match client.post(&url).json(&record).send().await {
                     Ok(response) => response,
                     Err(e) => {
-                        error!("Failed to send request: {}", e);
+                        error!("Failed to send request to target service: {}", e);
                         return Err(Status::new(Code::Unavailable, e.to_string()));
                     }
                 };
@@ -134,26 +181,47 @@ impl RouteService for RouteServiceImpl {
     }
 }
 
-/// 启动 gRPC 服务器
-pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
-    let addr = if let Some(grpc_opts) = &opts.grpc {
-        if !grpc_opts.enabled {
-            return Err(Error::Config("grpc is not enabled".to_string()));
-        }
-        let addr = format!("{}:{}", grpc_opts.host, grpc_opts.port);
-        addr.parse::<std::net::SocketAddr>()
-            .map_err(|e| Error::Config(e.to_string()))?
-    } else {
-        return Err(Error::Config("grpc options not found".to_string()));
-    };
+/// gRPC 监控中间件
+pub struct GrpcMetricsMiddleware;
 
-    let route_service = RouteServiceImpl::new(opts.clone());
-    Server::builder()
-        .add_service(RouteServiceServer::new(route_service))
-        .serve(addr)
-        .await
-        .map_err(|e| Error::Proxy(e.to_string()))?;
-    
-    info!("gRPC server started at {}", addr);
-    Ok(())
+impl GrpcMetricsMiddleware {
+    /// 记录请求开始
+    pub fn record_request_start(request: &Request<RouteMessage>) {
+        // 记录请求大小
+        let request_size = request.get_ref().encoded_len() as f64;
+        GRPC_REQUEST_SIZE.observe(request_size);
+
+        // 增加活跃连接数
+        GRPC_ACTIVE_CONNECTIONS.inc();
+    }
+
+    /// 记录请求完成
+    pub fn record_request_complete(
+        start_time: Instant,
+        result: &Result<Response<RouteResponse>, Status>,
+    ) {
+        // 记录响应大小
+        if let Ok(ref response) = result {
+            let response_size = response.get_ref().encoded_len() as f64;
+            GRPC_RESPONSE_SIZE.observe(response_size);
+        }
+
+        // 记录请求处理时间
+        let duration = start_time.elapsed().as_secs_f64();
+        GRPC_REQUEST_DURATION.observe(duration);
+
+        // 记录请求结果
+        match result {
+            Ok(_) => {
+                GRPC_REQUESTS_TOTAL.inc();
+            }
+            Err(_) => {
+                GRPC_REQUESTS_TOTAL.inc();
+                GRPC_ERRORS_TOTAL.inc();
+            }
+        }
+
+        // 减少活跃连接数
+        GRPC_ACTIVE_CONNECTIONS.dec();
+    }
 }

@@ -7,14 +7,15 @@ use qproxy::{
 #[tokio::test]
 async fn test_sync_service_creation() {
     let options = Options {
-        peer: Some(PeerOptions {
-            host: "localhost".to_string(),
-            port: 8080,
-            tls: false,
-        }),
         sync: qproxy::options::SyncOptions {
             enabled: true,
             shards: 1,
+            interval: 1000,
+            peer: Some(PeerOptions {
+                host: "localhost".to_string(),
+                port: 8080,
+                tls: false,
+            })
         },
         ..Default::default()
     };
@@ -26,14 +27,15 @@ async fn test_sync_service_creation() {
 #[tokio::test]
 async fn test_sync_with_peers() {
     let options = Options {
-        peer: Some(PeerOptions {
-            host: "localhost".to_string(),
-            port: 8080,
-            tls: false,
-        }),
         sync: qproxy::options::SyncOptions {
             enabled: true,
             shards: 1,
+            interval: 1000,
+            peer: Some(PeerOptions {
+                host: "localhost".to_string(),
+                port: 8080,
+                tls: false,
+            }),
         },
         ..Default::default()
     };
@@ -51,21 +53,22 @@ async fn test_sync_with_peers() {
 #[tokio::test]
 async fn test_sync_from_peer() {
     let options = Options {
-        peer: Some(PeerOptions {
-            host: "localhost".to_string(),
-            port: 8080,
-            tls: false,
-        }),
         sync: qproxy::options::SyncOptions {
             enabled: true,
             shards: 1,
+            interval: 1000,
+            peer: Some(PeerOptions {
+                host: "localhost".to_string(),
+                port: 8080,
+                tls: false,
+            }),
         },
         ..Default::default()
     };
 
     let service = SyncService::new(&options).unwrap();
     let client = service.client.clone();
-    let peer = options.peer.unwrap();
+    let peer = options.sync.peer.unwrap();
 
     // 创建测试记录
     let record = TrafficRecord {

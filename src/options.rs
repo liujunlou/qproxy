@@ -10,16 +10,16 @@ pub struct Options {
     pub mode: ProxyMode,
     // http代理节点
     pub http: HttpOptions,
-    // tcp代理节点
-    pub tcp: TcpOptions,
     // tcp protobuf 服务器
     pub grpc: Option<GrpcOptions>,
-    // 流量回放目标服务节点
-    pub peer: Option<PeerOptions>,
-    // 服务发现
-    pub service_discovery: ServiceDiscoveryOptions,
+    // tcp代理节点
+    pub tcp: Option<TcpOptions>,
     // 同步
     pub sync: SyncOptions,
+    // 流量回放目标服务节点
+    // pub peer: Option<PeerOptions>,
+    // 服务发现
+    pub service_discovery: ServiceDiscoveryOptions,
     // redis
     pub redis: RedisOptions,
     // 日志
@@ -30,13 +30,15 @@ pub struct Options {
 pub struct SyncOptions {
     pub enabled: bool,
     pub shards: u16,
+    pub interval: u64, // 同步间隔, 单位: ms
+    pub peer: Option<PeerOptions>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct HttpOptions {
     pub host: String,
     pub port: u16,
-    pub downstream: String,
+    pub downstream: Vec<String>,
     pub filter_fields: Option<Vec<String>>,
 }
 
@@ -56,13 +58,21 @@ pub struct TlsOptions {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct GrpcOptions {
+    pub enabled: bool,
+    pub host: String,
+    pub port: u16,
+    pub downstream: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PeerOptions {
     pub host: String,
     pub port: u16,
     pub tls: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub enum ProxyMode {
     // 流量录制
     Record,
@@ -150,20 +160,19 @@ pub struct RedisOptions {
     pub retry_count: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct GrpcOptions {
-    pub enabled: bool,
-    pub host: String,
-    pub port: u16,
-}
-
 impl Options {
     // 加载配置
     pub fn new() -> Result<Self, Error> {
         let config_path =
             std::env::var("CONFIG_PATH").unwrap_or_else(|_| "config.json".to_string());
         let config_str = fs::read_to_string(config_path)?;
-        serde_json::from_str(&config_str).map_err(|e| Error::Config(e.to_string()))
+        serde_json::from_str(&config_str)
+            .map_err(|e| Error::Config(e.to_string()))
+            .map(|mut opts: Options| {
+                let level = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+                opts.logging.level = level;
+                opts
+            })
     }
 }
 
@@ -174,18 +183,12 @@ impl Default for Options {
             http: HttpOptions {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
-                downstream: "http://localhost:8080".to_string(),
+                downstream: vec!["http://localhost:8080".to_string()],
                 filter_fields: None,
             },
-            tcp: TcpOptions {
-                enabled: false,
-                host: "0.0.0.0".to_string(),
-                port: 8080,
-                downstream: vec![],
-                tls: None,
-            },
+            tcp: None,
             grpc: None,
-            peer: None,
+            // peer: None,
             service_discovery: ServiceDiscoveryOptions {
                 provider: ServiceDiscoveryProvider::Static,
                 config: ServiceDiscoveryConfig {
@@ -197,6 +200,8 @@ impl Default for Options {
             sync: SyncOptions {
                 enabled: false,
                 shards: 1,
+                interval: 1000,
+                peer: None,
             },
             redis: RedisOptions {
                 url: "redis://localhost:6379".to_string(),
