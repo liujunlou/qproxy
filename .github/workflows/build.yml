@@ -50,12 +50,15 @@ jobs:
             apt-get update
             apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
             apt-get install -y libssl-dev:arm64 libssl3:arm64 pkg-config
+            echo 'Checking OpenSSL installation...'
+            find /usr -name 'openssl' -type d 2>/dev/null || true
+            find /usr -name 'ssl.h' 2>/dev/null || true
             export PKG_CONFIG_ALLOW_CROSS=1
-            export OPENSSL_DIR=/usr/lib/aarch64-linux-gnu
+            export OPENSSL_DIR=/usr
             export OPENSSL_LIB_DIR=/usr/lib/aarch64-linux-gnu
-            export OPENSSL_INCLUDE_DIR=/usr/include/aarch64-linux-gnu
+            export OPENSSL_INCLUDE_DIR=/usr/include
             export CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc
-            export CFLAGS_aarch64_unknown_linux_gnu='-I/usr/include/aarch64-linux-gnu'
+            export CFLAGS_aarch64_unknown_linux_gnu='-I/usr/include'
           fi
           cargo build --release --target ${{ matrix.target }}
         "
