@@ -152,8 +152,7 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ### 支持的平台
 
 - **Linux**: x86_64, ARM64
-- **macOS**: x86_64, ARM64 (Apple Silicon)
-- **Windows**: x86_64
+- **macOS**: ARM64 (Apple Silicon)
 
 ### 编译选项
 
@@ -172,7 +171,7 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 
 项目配置了 GitHub Actions 工作流，会在以下情况自动进行跨平台编译：
 
-- 推送到 dev/master 分支
+- 推送到 dev 分支
 - 创建 Pull Request
 - 发布新版本
 

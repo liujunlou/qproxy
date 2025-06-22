@@ -31,15 +31,6 @@ else
     echo "警告: Docker 未安装，跳过 Linux ARM64 编译"
 fi
 
-# 编译 Windows x86_64（需要 Docker）
-echo "编译 Windows x86_64..."
-if command -v docker &> /dev/null; then
-    docker run --rm -v "$(pwd)":/app -w /app rust:latest cargo build --release --target x86_64-pc-windows-msvc
-    cp target/x86_64-pc-windows-msvc/release/qproxy.exe dist/qproxy-windows-x86_64.exe
-else
-    echo "警告: Docker 未安装，跳过 Windows 编译"
-fi
-
 # 创建压缩包
 echo "创建发布包..."
 cd dist

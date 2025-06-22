@@ -44,8 +44,6 @@ docker-build:
 	docker run --rm -v "$(PWD)":/app -w /app rust:latest cargo build --release --target x86_64-unknown-linux-gnu
 	@echo "编译 Linux ARM64..."
 	docker run --rm -v "$(PWD)":/app -w /app rust:latest cargo build --release --target aarch64-unknown-linux-gnu
-	@echo "编译 Windows x86_64..."
-	docker run --rm -v "$(PWD)":/app -w /app rust:latest cargo build --release --target x86_64-pc-windows-msvc
 	@echo "Docker 编译完成！"
 
 # 安装到系统
