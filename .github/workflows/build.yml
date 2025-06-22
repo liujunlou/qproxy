@@ -1,0 +1,91 @@
+name: Build QProxy
+
+on:
+  push:
+    branches: [ dev ]
+  pull_request:
+    branches: [ dev ]
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: qproxy-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: qproxy-linux-aarch64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.target }}
+        override: true
+
+    - name: Cache dependencies
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Build release
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ matrix.artifact_name }}
+        path: target/${{ matrix.target }}/release/qproxy*
+
+  # 创建发布包
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      
+    - name: Create release archive
+      run: |
+        mkdir -p release
+        for artifact in qproxy-*; do
+          if [[ -d "$artifact" ]]; then
+            cd "$artifact"
+            for file in *; do
+              if [[ -f "$file" ]]; then
+                cp "$file" "../release/"
+              fi
+            done
+            cd ..
+          fi
+        done
+        
+        cd release
+        tar -czf qproxy-release.tar.gz *
+        zip -r qproxy-release.zip *
+        
+    - name: Upload release assets
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./release/qproxy-release.tar.gz
+        asset_name: qproxy-release.tar.gz
+        asset_content_type: application/gzip 

@@ -6,20 +6,23 @@ pub mod route {
 use prost::Message;
 use route::route_service_server::{RouteService, RouteServiceServer};
 use route::{RouteMessage, RouteResponse};
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
 use tracing::{error, info};
-use std::time::Instant;
 
 use crate::errors::Error;
 use crate::model::TrafficRecord;
-use crate::monitor::{GRPC_ACTIVE_CONNECTIONS, GRPC_ERRORS_TOTAL, GRPC_REQUESTS_TOTAL, GRPC_REQUEST_DURATION, GRPC_REQUEST_SIZE, GRPC_RESPONSE_SIZE};
+use crate::monitor::{
+    GRPC_ACTIVE_CONNECTIONS, GRPC_ERRORS_TOTAL, GRPC_REQUESTS_TOTAL, GRPC_REQUEST_DURATION,
+    GRPC_REQUEST_SIZE, GRPC_RESPONSE_SIZE,
+};
 use crate::options::{Options, ProxyMode};
 use crate::PLAYBACK_SERVICE;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
+use std::sync::Arc;
 
 /// 启动 gRPC 服务器
 pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
@@ -40,7 +43,7 @@ pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
         .serve(addr)
         .await
         .map_err(|e| Error::Proxy(e.to_string()))?;
-    
+
     info!("gRPC server started at {}", addr);
     Ok(())
 }
@@ -71,7 +74,7 @@ impl RouteService for RouteServiceImpl {
     ) -> Result<Response<RouteResponse>, Status> {
         let start_time = Instant::now();
         let method = "send_message";
-        
+
         // 记录请求开始
         GrpcMetricsMiddleware::record_request_start(&request);
 
@@ -115,7 +118,10 @@ impl RouteServiceImpl {
                     }
                 } else {
                     error!("Playback service not initialized");
-                    return Err(Status::new(Code::Internal, "Playback service not initialized".to_string()));
+                    return Err(Status::new(
+                        Code::Internal,
+                        "Playback service not initialized".to_string(),
+                    ));
                 }
             }
             // 将消息透传到公安网服务节点
@@ -131,7 +137,10 @@ impl RouteServiceImpl {
                 };
 
                 // 选择第一个下游地址，这里创建一个共享池来提供http客户端访问下游地址
-                let index = self.index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % downstream_addr.len();
+                let index = self
+                    .index
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    % downstream_addr.len();
                 let addr = &downstream_addr[index];
                 let client = {
                     let r = self.http_client_pool.read().await;
@@ -139,7 +148,9 @@ impl RouteServiceImpl {
                         client.clone()
                     } else {
                         let mut pool = self.http_client_pool.write().await;
-                        pool.entry(addr.clone()).or_insert_with(|| reqwest::Client::new()).clone()
+                        pool.entry(addr.clone())
+                            .or_insert_with(|| reqwest::Client::new())
+                            .clone()
                     }
                 };
 

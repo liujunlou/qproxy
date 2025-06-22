@@ -6,7 +6,6 @@ use tracing::error;
 
 use crate::{errors::Error, METRICS_COLLECTOR};
 
-
 /// 处理 Prometheus 指标请求
 pub async fn handle_metrics<B>(_req: Request<B>) -> Result<Response<Full<Bytes>>, Error>
 where

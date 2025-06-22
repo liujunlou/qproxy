@@ -9,6 +9,7 @@
 //! - MQTT客户端支持
 
 pub mod api;
+pub mod client;
 pub mod errors;
 pub mod filter;
 pub mod logger;
@@ -19,7 +20,6 @@ pub mod proxy;
 pub mod record;
 pub mod service_discovery;
 pub mod sync;
-pub mod client;
 pub mod mqtt_client {
     pub mod client;
     pub mod codec;

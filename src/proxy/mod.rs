@@ -1,6 +1,6 @@
+pub mod grpc;
 pub mod http;
 pub mod tcp;
-pub mod grpc;
 
 use crate::filter::response_filter::ResponseFilter;
 use crate::options::Options;
@@ -36,12 +36,11 @@ impl ProxyServer {
         });
         handles.push(http_handle);
 
-
         if let Some(tcp) = &self.options.tcp {
             let tcp_handle = tokio::spawn(async move {
                 if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
                     error!("TCP server failed to start: {}", e);
-                std::process::exit(1);
+                    std::process::exit(1);
                 }
             });
             handles.push(tcp_handle);

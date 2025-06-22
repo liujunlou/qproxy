@@ -119,6 +119,65 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 }
 ```
 
+## 编译和部署
+
+### 快速开始
+
+1. **编译当前平台**：
+   ```bash
+   # 使用 Makefile（推荐）
+   make release
+   
+   # 或直接使用 cargo
+   cargo build --release
+   ```
+
+2. **跨平台编译**：
+   ```bash
+   # 使用 Makefile
+   make cross-compile
+   
+   # 或使用脚本
+   ./scripts/cross-compile.sh
+   
+   # 或使用 Docker
+   make docker-build
+   ```
+
+3. **检查依赖**：
+   ```bash
+   make check-deps
+   ```
+
+### 支持的平台
+
+- **Linux**: x86_64, ARM64
+- **macOS**: x86_64, ARM64 (Apple Silicon)
+- **Windows**: x86_64
+
+### 编译选项
+
+| 命令 | 说明 |
+|------|------|
+| `make build` | 编译调试版本 |
+| `make release` | 编译发布版本（当前平台） |
+| `make cross-compile` | 跨平台编译（需要 Docker） |
+| `make docker-build` | 使用 Docker 进行跨平台编译 |
+| `make clean` | 清理构建文件 |
+| `make test` | 运行测试 |
+| `make package` | 创建发布包 |
+| `make install` | 安装到系统 |
+
+### GitHub Actions 自动编译
+
+项目配置了 GitHub Actions 工作流，会在以下情况自动进行跨平台编译：
+
+- 推送到 dev/master 分支
+- 创建 Pull Request
+- 发布新版本
+
+编译产物会自动上传为 GitHub Release 资源。
+
 ## 部署说明
 
 ### Record 节点部署
@@ -139,9 +198,16 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ## 使用方法
 
 1. 编译项目：
-   ```bash
-   cargo build --release
-   ```
+  ```bash
+  cargo build --release
+
+  # 编译x86_64版本
+  cross build --release --target x86_64-unknown-linux-gnu
+  cargo build --release --target x86_64-unknown-linux-gnu
+
+  # 编译AArch64版本
+  cross build --release --target aarch64-unknown-linux-gnu
+  ```
 
 2. 准备配置文件：
    - 根据节点角色选择对应的配置模板

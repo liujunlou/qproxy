@@ -8,11 +8,12 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
-use crate::{
-    errors::Error, options::Options,
+use crate::monitor::{
+    HTTP_ACTIVE_CONNECTIONS, HTTP_ERRORS_TOTAL, HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION,
+    HTTP_REQUEST_SIZE, HTTP_RESPONSE_SIZE,
 };
 use crate::{api, get_shutdown_rx};
-use crate::monitor::{HTTP_ACTIVE_CONNECTIONS, HTTP_ERRORS_TOTAL, HTTP_REQUESTS_TOTAL, HTTP_REQUEST_DURATION, HTTP_REQUEST_SIZE, HTTP_RESPONSE_SIZE};
+use crate::{errors::Error, options::Options};
 use std::time::Instant;
 
 // 启动http服务端
@@ -46,10 +47,10 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
                                         async move {
                                             let start_time = Instant::now();
                                             let result = api::handle_api_request(req, options).await;
-                                            
+
                                             // 记录请求完成
                                             HttpMetricsMiddleware::record_request_complete(start_time, &result);
-                                            
+
                                             result
                                         }
                                     }),
@@ -88,7 +89,7 @@ impl HttpMetricsMiddleware {
     pub fn record_request_start(req: &Request<hyper::body::Incoming>) {
         // 增加活跃连接数
         HTTP_ACTIVE_CONNECTIONS.inc();
-        
+
         // 记录请求大小（如果有 Content-Length 头）
         if let Some(content_length) = req.headers().get("content-length") {
             if let Ok(size) = content_length.to_str().unwrap_or("0").parse::<f64>() {
@@ -110,7 +111,7 @@ impl HttpMetricsMiddleware {
         match result {
             Ok(response) => {
                 HTTP_REQUESTS_TOTAL.inc();
-                
+
                 // 记录响应大小
                 if let Some(content_length) = response.headers().get("content-length") {
                     if let Ok(size) = content_length.to_str().unwrap_or("0").parse::<f64>() {

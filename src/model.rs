@@ -155,6 +155,11 @@ pub struct Offset {
 
 impl Offset {
     pub fn new(peer_id: String, shard_id: String, offset: u128, record_id: String) -> Self {
-        Self { peer_id, shard_id, offset, record_id }
+        Self {
+            peer_id,
+            shard_id,
+            offset,
+            record_id,
+        }
     }
 }

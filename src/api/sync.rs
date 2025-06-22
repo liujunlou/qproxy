@@ -1,6 +1,6 @@
 use crate::model::TrafficRecord;
-use crate::{errors::Error, options::Options};
 use crate::sync::SyncService;
+use crate::{errors::Error, options::Options};
 use crate::{ONCE_FILTER_CHAIN, PLAYBACK_SERVICE};
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -25,7 +25,7 @@ where
         ("GET", "/sync") => {
             // 获取 GET 请求的params参数
             let query_params = req.uri().query().unwrap_or("");
-            let params: std::collections::HashMap<String, String> = 
+            let params: std::collections::HashMap<String, String> =
                 url::form_urlencoded::parse(query_params.as_bytes())
                     .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect();
@@ -33,16 +33,21 @@ where
             let default_peer = "default".to_string();
             let default_shard = "default".to_string();
             let default_from = "internet".to_string();
-            
+
             let peer_id = params.get("peer_id").unwrap_or(&default_peer);
             let shard_id = params.get("shard_id").unwrap_or(&default_shard);
             // 区分互联网端和警务网
             let from = params.get("from").unwrap_or(&default_from);
-            info!("Getting sync records for peer: {}, shard: {}", peer_id, shard_id);
+            info!(
+                "Getting sync records for peer: {}, shard: {}",
+                peer_id, shard_id
+            );
 
             let playback_service = PLAYBACK_SERVICE.read().await;
             let records = if let Some(playback_service) = playback_service.as_ref() {
-                playback_service.get_records_for_sync(&peer_id, &shard_id).await
+                playback_service
+                    .get_records_for_sync(&peer_id, &shard_id)
+                    .await
                     .map_err(|e| Error::Proxy(format!("Failed to get sync records: {}", e)))?
             } else {
                 vec![]
@@ -62,10 +67,9 @@ where
             } else {
                 records
             };
-            
-            let json = serde_json::to_string(&records).map_err(|e| {
-                Error::Proxy(format!("Failed to serialize records: {}", e))
-            })?;
+
+            let json = serde_json::to_string(&records)
+                .map_err(|e| Error::Proxy(format!("Failed to serialize records: {}", e)))?;
 
             return Ok(Response::builder()
                 .status(http::StatusCode::OK)
@@ -75,9 +79,12 @@ where
         }
         ("POST", "/sync") => {
             // 接收并同步记录
-            let body = req.into_body().collect().await.map_err(|_| {
-                Error::Http1("Failed to collect request body".to_string())
-            })?.to_bytes();
+            let body = req
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| Error::Http1("Failed to collect request body".to_string()))?
+                .to_bytes();
             let record: TrafficRecord = serde_json::from_slice(&body)
                 .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
 
@@ -86,9 +93,10 @@ where
             // 返回透传的真实响应数据
             let playback_service = PLAYBACK_SERVICE.read().await;
             let response = if let Some(playback_service) = playback_service.as_ref() {
-                playback_service.sync_from_peer(record.clone()).await.map_err(|e| {
-                    Error::Proxy(format!("Failed to sync from peer: {}", e))
-                })?
+                playback_service
+                    .sync_from_peer(record.clone())
+                    .await
+                    .map_err(|e| Error::Proxy(format!("Failed to sync from peer: {}", e)))?
             } else {
                 return Err(Error::Proxy("Playback service not initialized".to_string()));
             };
@@ -96,7 +104,7 @@ where
             let response_str = String::from_utf8(response).map_err(|e| {
                 Error::Proxy(format!("Failed to convert response to string: {}", e))
             })?;
-            
+
             return Ok(Response::builder()
                 .status(http::StatusCode::OK)
                 .header("Content-Type", "application/json")
@@ -108,7 +116,7 @@ where
                 "error": "Method Not Allowed",
                 "message": "The requested method is not allowed for this endpoint"
             });
-            
+
             Ok(Response::builder()
                 .status(StatusCode::METHOD_NOT_ALLOWED)
                 .header("Content-Type", "application/json")
@@ -116,4 +124,4 @@ where
                 .unwrap())
         }
     }
-} 
+}

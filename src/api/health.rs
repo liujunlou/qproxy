@@ -28,4 +28,4 @@ where
             .body(Full::new(Bytes::from("Metrics collector not initialized")))
             .unwrap());
     }
-} 
+}

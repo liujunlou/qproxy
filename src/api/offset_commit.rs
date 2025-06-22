@@ -24,16 +24,22 @@ where
     match (method, path) {
         ("POST", "/commit") => {
             // 获取 POST 请求的body参数
-            let body = req.into_body().collect().await.map_err(|_| {
-                Error::Http1("Failed to collect request body".to_string())
-            })?.to_bytes();
-            let offset: Offset = serde_json::from_slice(&body).map_err(|e| {
-                Error::Proxy(format!("Failed to parse records: {}", e))
-            })?;
+            let body = req
+                .into_body()
+                .collect()
+                .await
+                .map_err(|_| Error::Http1("Failed to collect request body".to_string()))?
+                .to_bytes();
+            let offset: Offset = serde_json::from_slice(&body)
+                .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
 
             // 更新offset
             if let Err(e) = update_offset(offset.clone()).await {
-                error!("Failed to update offset for peer: {} for {:?}", offset.peer_id.clone(), e);
+                error!(
+                    "Failed to update offset for peer: {} for {:?}",
+                    offset.peer_id.clone(),
+                    e
+                );
                 let response = json!({
                     "error": "Internal Server Error",
                     "message": "Failed to update offset"
@@ -72,7 +78,12 @@ where
 async fn update_offset(offset: Offset) -> Result<(), Error> {
     let playback_service = PLAYBACK_SERVICE.read().await;
     if let Some(playback_service) = playback_service.as_ref() {
-        let checkpoint = CheckpointInfo::new_with_offset(&offset.peer_id, &offset.shard_id, offset.offset, offset.record_id)?;
+        let checkpoint = CheckpointInfo::new_with_offset(
+            &offset.peer_id,
+            &offset.shard_id,
+            offset.offset,
+            offset.record_id,
+        )?;
         playback_service.update_checkpoint(&checkpoint).await?;
     }
     Ok(())

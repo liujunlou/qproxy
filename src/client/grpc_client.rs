@@ -11,16 +11,17 @@ use tokio::sync::RwLock;
 // use route::route_service_client::RouteServiceClient;
 // use route::RouteMessage;
 // use route::RouteResponse;
-use tonic::transport::Channel;
-use tonic::Request;
-use tonic::Response;
-use tonic::Code;
 use crate::errors::Error;
 use crate::playback::route::route_service_client::RouteServiceClient;
 use crate::playback::route::RouteMessage;
 use crate::playback::route::RouteResponse;
+use tonic::transport::Channel;
+use tonic::Code;
+use tonic::Request;
+use tonic::Response;
 
-pub static GRPC_CLIENT_POOL: Lazy<Arc<RwLock<HashMap<String, GrpcClient>>>> = Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static GRPC_CLIENT_POOL: Lazy<Arc<RwLock<HashMap<String, GrpcClient>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 
 pub async fn get_grpc_client(addr: &str) -> Result<GrpcClient, Error> {
     {
@@ -29,9 +30,12 @@ pub async fn get_grpc_client(addr: &str) -> Result<GrpcClient, Error> {
             return Ok((*client).clone());
         }
     }
-    
-    GRPC_CLIENT_POOL.write().await.insert(addr.to_string(), GrpcClient::new(addr).await?);
-    
+
+    GRPC_CLIENT_POOL
+        .write()
+        .await
+        .insert(addr.to_string(), GrpcClient::new(addr).await?);
+
     let pool = GRPC_CLIENT_POOL.read().await;
     match pool.get(addr) {
         Some(client) => Ok((*client).clone()),
@@ -55,7 +59,10 @@ impl GrpcClient {
         })
     }
 
-    pub async fn call(&mut self, request: Request<RouteMessage>) -> Result<Response<RouteResponse>, Error> {
+    pub async fn call(
+        &mut self,
+        request: Request<RouteMessage>,
+    ) -> Result<Response<RouteResponse>, Error> {
         match self.client.send_message(request).await {
             Ok(response) => Ok(response),
             Err(status) => {

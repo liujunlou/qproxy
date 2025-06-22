@@ -5,19 +5,19 @@ use serde_json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::{errors::Error, options::Options};
 use crate::playback::PlaybackService;
 use crate::sync::SyncService;
+use crate::{errors::Error, options::Options};
 use hyper::body::Body;
 use prometheus::{Encoder, TextEncoder};
 use serde_json::json;
 use tracing::{error, info};
 
 pub mod health;
-pub mod sync;
 pub mod metrics;
-pub mod playback;
 pub mod offset_commit;
+pub mod playback;
+pub mod sync;
 
 /// 处理 API 请求
 pub async fn handle_api_request<B>(
@@ -35,12 +35,8 @@ where
         ("GET", "/metrics") => metrics::handle_metrics(req).await,
         ("GET", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/sync") => sync::handle_sync_request(req, options).await,
-        ("POST", "/playback") => {
-            playback::handle_playback_request(req).await
-        }
-        ("POST", "/commit") => {
-            offset_commit::handle_offset_commit_request(req).await
-        }
+        ("POST", "/playback") => playback::handle_playback_request(req).await,
+        ("POST", "/commit") => offset_commit::handle_offset_commit_request(req).await,
         _ => {
             let response = json!({
                 "error": "Not Found",

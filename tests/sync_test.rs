@@ -15,7 +15,7 @@ async fn test_sync_service_creation() {
                 host: "localhost".to_string(),
                 port: 8080,
                 tls: false,
-            })
+            }),
         },
         ..Default::default()
     };

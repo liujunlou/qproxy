@@ -1,5 +1,10 @@
 use crate::{
-    client::grpc_client::{get_grpc_client, GrpcClient}, errors::Error, get_shutdown_rx, model::{Offset, Protocol, TrafficRecord}, options::SyncOptions, SERVICE_REGISTRY
+    client::grpc_client::{get_grpc_client, GrpcClient},
+    errors::Error,
+    get_shutdown_rx,
+    model::{Offset, Protocol, TrafficRecord},
+    options::SyncOptions,
+    SERVICE_REGISTRY,
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -57,7 +62,12 @@ impl CheckpointInfo {
             error_message: None,
         })
     }
-    pub fn new_with_offset(peer_id: &str, shard_id: &str, offset: u128, record_id: String) -> Result<Self, Error> {
+    pub fn new_with_offset(
+        peer_id: &str,
+        shard_id: &str,
+        offset: u128,
+        record_id: String,
+    ) -> Result<Self, Error> {
         Ok(Self {
             peer_id: peer_id.to_string(),
             shard_id: shard_id.to_string(),
@@ -583,31 +593,40 @@ impl PlaybackService {
                                         warn!("Failed to create GRPC client: {}", e);
                                         return Response::builder()
                                             .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                            .body(Full::new(Bytes::from("Failed to create GRPC client")))
+                                            .body(Full::new(Bytes::from(
+                                                "Failed to create GRPC client",
+                                            )))
                                             .unwrap();
                                     }
                                 };
                                 // 反序列化RouteMessage
-                                let route_message = match prost::Message::decode(&mut &record.request.body[..]) {
-                                    Ok(route_message) => route_message,
-                                    Err(e) => {
-                                        warn!("Failed to decode RouteMessage: {}", e);
-                                        return Response::builder()
-                                            .status(StatusCode::BAD_REQUEST)
-                                            .body(Full::new(Bytes::from("Failed to decode RouteMessage")))
-                                            .unwrap();
-                                    }
-                                };
+                                let route_message =
+                                    match prost::Message::decode(&mut &record.request.body[..]) {
+                                        Ok(route_message) => route_message,
+                                        Err(e) => {
+                                            warn!("Failed to decode RouteMessage: {}", e);
+                                            return Response::builder()
+                                                .status(StatusCode::BAD_REQUEST)
+                                                .body(Full::new(Bytes::from(
+                                                    "Failed to decode RouteMessage",
+                                                )))
+                                                .unwrap();
+                                        }
+                                    };
                                 let request = tonic::Request::new(route_message);
                                 // 通过grpc回放流量，并返回响应
                                 match client.call(request).await {
                                     Ok(response) => {
                                         if response.get_ref().status_code == 200 {
-                                            return Response::new(Full::new(Bytes::from(response.get_ref().payload.clone())));
+                                            return Response::new(Full::new(Bytes::from(
+                                                response.get_ref().payload.clone(),
+                                            )));
                                         } else {
                                             return Response::builder()
                                                 .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                                .body(Full::new(Bytes::from("Failed to send GRPC request")))
+                                                .body(Full::new(Bytes::from(
+                                                    "Failed to send GRPC request",
+                                                )))
                                                 .unwrap();
                                         }
                                     }
@@ -615,7 +634,9 @@ impl PlaybackService {
                                         warn!("Failed to send GRPC request: {}", e);
                                         return Response::builder()
                                             .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                            .body(Full::new(Bytes::from("Failed to send GRPC request")))
+                                            .body(Full::new(Bytes::from(
+                                                "Failed to send GRPC request",
+                                            )))
                                             .unwrap();
                                     }
                                 };
@@ -868,7 +889,12 @@ impl PlaybackService {
                             // 这里完成 MQTT connect和流量回放，复用连接
                             let mut client = get_grpc_client(&addr).await?;
                             let route_message = RouteMessage::decode(&mut &record.request.body[..])
-                                .map_err(|_| Error::GrpcStatus(format!("Failed to decode RouteMessage {:?}", record.request.body)))?;
+                                .map_err(|_| {
+                                    Error::GrpcStatus(format!(
+                                        "Failed to decode RouteMessage {:?}",
+                                        record.request.body
+                                    ))
+                                })?;
                             let request = tonic::Request::new(route_message);
                             let response = client.call(request).await?;
                             return Ok(response.get_ref().payload.clone());
@@ -1053,7 +1079,12 @@ impl PlaybackService {
             }
         }
         // 4. 返回已回放的offset
-        let offset = Offset::new(peer_id.to_string(), shard_id.to_string(), last_offset, last_record_id);
+        let offset = Offset::new(
+            peer_id.to_string(),
+            shard_id.to_string(),
+            last_offset,
+            last_record_id,
+        );
         Ok(offset)
     }
 }
@@ -1062,21 +1093,37 @@ impl PlaybackService {
 async fn update_offset(opts: &SyncOptions, offset: Offset) -> Result<(), Error> {
     if let Some(peer) = opts.peer.as_ref() {
         let client = reqwest::Client::new();
-        match client.post(format!("http://{}:{}/commit", peer.host.clone(), peer.port.clone()))
+        match client
+            .post(format!(
+                "http://{}:{}/commit",
+                peer.host.clone(),
+                peer.port.clone()
+            ))
             .json(&offset)
-        .send()
-        .await {
+            .send()
+            .await
+        {
             Ok(res) => {
                 if res.status().is_success() {
-                    info!("Successfully updated offset for peer: {}", offset.peer_id.clone());
+                    info!(
+                        "Successfully updated offset for peer: {}",
+                        offset.peer_id.clone()
+                    );
                     Ok(())
                 } else {
-                    error!("Failed to update offset for peer: {}", offset.peer_id.clone());
+                    error!(
+                        "Failed to update offset for peer: {}",
+                        offset.peer_id.clone()
+                    );
                     Err(Error::Http1("Failed to update offset".to_string()))
                 }
             }
             Err(e) => {
-                error!("Failed to update offset for peer: {}, {:?}", offset.peer_id.clone(), e);
+                error!(
+                    "Failed to update offset for peer: {}, {:?}",
+                    offset.peer_id.clone(),
+                    e
+                );
                 Err(Error::Http1("Failed to update offset".to_string()))
             }
         }

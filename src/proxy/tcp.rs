@@ -25,7 +25,10 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
     let addr = format!("{}:{}", tcp_opts.host, tcp_opts.port);
     let addr = SocketAddr::from_str(&addr).expect("invalid socket address");
     let listener = TcpListener::bind(addr).await?;
-    info!("TCP proxy server listening on {}", listener.local_addr().unwrap());
+    info!(
+        "TCP proxy server listening on {}",
+        listener.local_addr().unwrap()
+    );
 
     let mut shutdown_rx = get_shutdown_rx().await;
 
