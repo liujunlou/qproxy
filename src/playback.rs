@@ -1,5 +1,5 @@
 use crate::{
-    client::grpc_client::{get_grpc_client, GrpcClient}, errors::Error, get_shutdown_rx, model::{Protocol, TrafficRecord}, SERVICE_REGISTRY
+    client::grpc_client::{get_grpc_client, GrpcClient}, errors::Error, get_shutdown_rx, model::{Offset, Protocol, TrafficRecord}, options::SyncOptions, SERVICE_REGISTRY
 };
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -53,6 +53,17 @@ impl CheckpointInfo {
             last_sync_time: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
             last_record_id: String::new(),
             status: SyncStatus::Pending,
+            retry_count: 0,
+            error_message: None,
+        })
+    }
+    pub fn new_with_offset(peer_id: &str, shard_id: &str, offset: u128, record_id: String) -> Result<Self, Error> {
+        Ok(Self {
+            peer_id: peer_id.to_string(),
+            shard_id: shard_id.to_string(),
+            last_sync_time: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+            last_record_id: record_id,
+            status: SyncStatus::Completed,
             retry_count: 0,
             error_message: None,
         })
@@ -954,7 +965,7 @@ impl PlaybackService {
     }
 
     /// 启动流量回放服务
-    pub async fn auto_playback(&self) {
+    pub async fn auto_playback(&self, sync: &SyncOptions) {
         let mut backoff = Duration::from_secs(1);
         let max_backoff = Duration::from_secs(60);
         let mut notify_rx = self.notify_rx.lock().await;
@@ -968,8 +979,16 @@ impl PlaybackService {
                 // 处理新流量通知
                 Some(peer_id) = notify_rx.recv() => {
                     info!("Received new traffic notification for peer: {}", peer_id);
-                    if let Err(e) = self.replay_pending_traffic(&peer_id, "default").await {
-                        error!("Failed to replay traffic for peer {}: {}", peer_id, e);
+                    let offset = match self.replay_pending_traffic(&peer_id, "default").await {
+                        Ok(offset) => offset,
+                        Err(e) => {
+                            error!("Failed to replay traffic for peer {}: {}", peer_id, e);
+                            continue;
+                        }
+                    };
+                    // 更新offset
+                    if let Err(e) = update_offset(&sync, offset).await {
+                        error!("Failed to update offset for peer: {}", peer_id);
                     }
                     // 重置回退时间
                     backoff = Duration::from_secs(1);
@@ -977,8 +996,16 @@ impl PlaybackService {
                 // 轮询检查待回放流量
                 _ = tokio::time::sleep(backoff) => {
                     info!("Polling for pending traffic with backoff: {:?}", backoff);
-                    if let Err(e) = self.replay_pending_traffic("default", "default").await {
-                        error!("Failed to replay traffic during polling: {}", e);
+                    let offset = match self.replay_pending_traffic("default", "default").await {
+                        Ok(offset) => offset,
+                        Err(e) => {
+                            error!("Failed to replay traffic during polling: {}", e);
+                            continue;
+                        }
+                    };
+                    // 更新offset
+                    if let Err(e) = update_offset(&sync, offset).await {
+                        error!("Failed to update offset for peer: {}", "default");
                     }
                     // 指数回退，但不超过最大回退时间
                     backoff = std::cmp::min(backoff * 2, max_backoff);
@@ -988,7 +1015,7 @@ impl PlaybackService {
     }
 
     /// 回放待处理的流量
-    async fn replay_pending_traffic(&self, peer_id: &str, shard_id: &str) -> Result<(), Error> {
+    async fn replay_pending_traffic(&self, peer_id: &str, shard_id: &str) -> Result<Offset, Error> {
         let key = self.get_traffic_key(peer_id, shard_id);
 
         // 1. 先获取所有需要回放的记录
@@ -1001,6 +1028,8 @@ impl PlaybackService {
         };
 
         // 2. 回放流量
+        let mut last_offset = 0;
+        let mut last_record_id = String::new();
         let mut failed_records = Vec::new();
         for record in &records_to_replay {
             info!("Replaying traffic record: {}", record.id);
@@ -1008,6 +1037,11 @@ impl PlaybackService {
                 // 将回放失败的记录写入列表进行重试
                 error!("Failed to replay traffic record: {}", e);
                 failed_records.push(record.id.clone());
+            }
+            // 更新offset
+            if record.timestamp > last_offset {
+                last_offset = record.timestamp.clone();
+                last_record_id = record.id.clone();
             }
         }
 
@@ -1018,7 +1052,36 @@ impl PlaybackService {
                 records.retain(|r| !failed_records.contains(&r.id));
             }
         }
+        // 4. 返回已回放的offset
+        let offset = Offset::new(peer_id.to_string(), shard_id.to_string(), last_offset, last_record_id);
+        Ok(offset)
+    }
+}
 
-        Ok(())
+/// 上报offset
+async fn update_offset(opts: &SyncOptions, offset: Offset) -> Result<(), Error> {
+    if let Some(peer) = opts.peer.as_ref() {
+        let client = reqwest::Client::new();
+        match client.post(format!("http://{}:{}/commit", peer.host.clone(), peer.port.clone()))
+            .json(&offset)
+        .send()
+        .await {
+            Ok(res) => {
+                if res.status().is_success() {
+                    info!("Successfully updated offset for peer: {}", offset.peer_id.clone());
+                    Ok(())
+                } else {
+                    error!("Failed to update offset for peer: {}", offset.peer_id.clone());
+                    Err(Error::Http1("Failed to update offset".to_string()))
+                }
+            }
+            Err(e) => {
+                error!("Failed to update offset for peer: {}, {:?}", offset.peer_id.clone(), e);
+                Err(Error::Http1("Failed to update offset".to_string()))
+            }
+        }
+    } else {
+        error!("No peer found for sync");
+        return Err(Error::Config("No peer found for sync".to_string()));
     }
 }

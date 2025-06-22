@@ -144,3 +144,17 @@ impl TrafficRecord {
         Ok(filtered)
     }
 }
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct Offset {
+    pub peer_id: String,
+    pub shard_id: String,
+    pub offset: u128,
+    pub record_id: String,
+}
+
+impl Offset {
+    pub fn new(peer_id: String, shard_id: String, offset: u128, record_id: String) -> Self {
+        Self { peer_id, shard_id, offset, record_id }
+    }
+}

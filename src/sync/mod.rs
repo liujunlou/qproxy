@@ -36,16 +36,16 @@ impl SyncService {
     /// 开启定时任务，拉取待回放流量
     pub async fn start(self) -> JoinHandle<()> {
         let options = self.options.clone();
-        let client = self.client.clone();
-
         // 异步自动回放
         tokio::spawn(async move {
             let playback_service = PLAYBACK_SERVICE.read().await;
             if let Some(playback_service) = playback_service.as_ref() {
-                playback_service.auto_playback().await;
+                playback_service.auto_playback(&options.sync.clone()).await;
             }
         });
 
+        let options = self.options.clone();
+        let client = self.client.clone();
         // 定时拉取同步记录
         tokio::spawn(async move {
             loop {

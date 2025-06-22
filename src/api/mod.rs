@@ -17,6 +17,7 @@ pub mod health;
 pub mod sync;
 pub mod metrics;
 pub mod playback;
+pub mod offset_commit;
 
 /// 处理 API 请求
 pub async fn handle_api_request<B>(
@@ -36,6 +37,9 @@ where
         ("POST", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/playback") => {
             playback::handle_playback_request(req).await
+        }
+        ("POST", "/commit") => {
+            offset_commit::handle_offset_commit_request(req).await
         }
         _ => {
             let response = json!({
