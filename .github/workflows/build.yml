@@ -157,14 +157,17 @@ jobs:
         with:
           name: qproxy-docker-package-${{ matrix.arch }}
           path: |
-            qproxy-docker-*.tar.gz
-            qproxy-docker-*.zip
+            qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
+            qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
           retention-days: 30
 
   release:
     needs: build-docker
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     
     steps:
     - name: Download artifacts
@@ -178,7 +181,7 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./qproxy-docker-*.tar.gz
+        asset_path: ./qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
         asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
         
@@ -188,6 +191,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./qproxy-docker-*.zip
+        asset_path: ./qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
         asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
         asset_content_type: application/zip 
