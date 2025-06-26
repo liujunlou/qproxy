@@ -1,0 +1,69 @@
+# 多阶段构建 - 构建阶段
+FROM rust:1.75-slim as builder
+
+# 安装构建依赖
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制Cargo文件
+COPY Cargo.toml Cargo.lock ./
+COPY qproxy-macros/Cargo.toml ./qproxy-macros/
+COPY proto/ ./proto/
+
+# 创建虚拟项目来缓存依赖
+RUN mkdir -p src qproxy-macros/src && \
+    echo "fn main() {}" > src/main.rs && \
+    echo "fn main() {}" > qproxy-macros/src/lib.rs && \
+    cargo build --release && \
+    rm -rf src qproxy-macros/src
+
+# 复制源代码
+COPY src/ ./src/
+COPY qproxy-macros/src/ ./qproxy-macros/src/
+
+# 构建应用
+RUN cargo build --release
+
+# 运行阶段
+FROM debian:bookworm-slim
+
+# 安装运行时依赖
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# 创建非root用户
+RUN groupadd -r qproxy && useradd -r -g qproxy qproxy
+
+# 设置工作目录
+WORKDIR /app
+
+# 从构建阶段复制二进制文件
+COPY --from=builder /app/target/release/qproxy /app/qproxy
+
+# 复制配置文件
+COPY config.json /app/config.json
+
+# 创建日志目录
+RUN mkdir -p /app/logs && chown -R qproxy:qproxy /app
+
+# 切换到非root用户
+USER qproxy
+
+# 暴露端口
+EXPOSE 8080 8082 8084 8085
+
+# 健康检查
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8080/health || exit 1
+
+# 启动命令
+CMD ["/app/qproxy"] 
