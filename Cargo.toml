@@ -70,7 +70,7 @@ uuid = { version = "1.7", features = ["v4"] }
 
 # 用于获取系统信息
 sysinfo = "0.35"
-prometheus = "0.14"
+prometheus = "0.13"
 # 用于在scope结束时执行清理
 scopeguard = "1.2"
 # 缓存
