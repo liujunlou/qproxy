@@ -48,120 +48,120 @@ jobs:
         
         # 创建部署脚本
         cat > $PACKAGE_NAME/deploy.sh << 'EOF'
-#!/bin/bash
+        #!/bin/bash
 
-set -e
+        set -e
 
-echo "开始部署 QProxy..."
+        echo "开始部署 QProxy..."
 
-# 加载镜像
-echo "📦 加载 Docker 镜像..."
-docker load -i qproxy.tar
+        # 加载镜像
+        echo "Loading Docker image..."
+        docker load -i qproxy.tar
 
-# 创建网络
-echo "🌐 创建 Docker 网络..."
-docker network create qproxy-network 2>/dev/null || true
+        # 创建网络
+        echo "Creating Docker network..."
+        docker network create qproxy-network 2>/dev/null || true
 
-# 启动容器
-echo "▶️  启动 QProxy 容器..."
-docker run -d \
-  --name qproxy \
-  --network qproxy-network \
-  -p 8080:8080 \
-  -p 8082:8082 \
-  -p 8084:8084 \
-  -p 8085:8085 \
-  -v $(pwd)/config.json:/app/config.json:ro \
-  -v qproxy_logs:/app/logs \
-  --restart unless-stopped \
-  qproxy:latest
+        # 启动容器
+        echo "Starting QProxy container..."
+        docker run -d \
+        --name qproxy \
+        --network qproxy-network \
+        -p 8080:8080 \
+        -p 8082:8082 \
+        -p 8084:8084 \
+        -p 8085:8085 \
+        -v $(pwd)/config.json:/app/config.json:ro \
+        -v qproxy_logs:/app/logs \
+        --restart unless-stopped \
+        qproxy:latest
 
-echo "✅ 部署完成！"
-echo "📊 容器状态: docker ps"
-echo "📋 查看日志: docker logs -f qproxy"
-EOF
+        echo "Deployment completed!"
+        echo "Container status: docker ps"
+        echo "View logs: docker logs -f qproxy"
+        EOF
 
-        # 创建停止脚本
-        cat > $PACKAGE_NAME/stop.sh << 'EOF'
-#!/bin/bash
+                # 创建停止脚本
+                cat > $PACKAGE_NAME/stop.sh << 'EOF'
+        #!/bin/bash
 
-echo "🛑 停止 QProxy 服务..."
-docker stop qproxy 2>/dev/null || true
-docker rm qproxy 2>/dev/null || true
+        echo "Stopping QProxy service..."
+        docker stop qproxy 2>/dev/null || true
+        docker rm qproxy 2>/dev/null || true
 
-echo "✅ 服务已停止"
-EOF
+        echo "Service stopped"
+        EOF
 
         # 创建README
         cat > $PACKAGE_NAME/README.md << EOF
-# QProxy Docker 部署包
+        # QProxy Docker 部署包
 
-版本: ${{ steps.version.outputs.version }}
+        版本: ${{ steps.version.outputs.version }}
 
-## 系统要求
+        ## 系统要求
 
-- Docker 20.10+
-- 支持 ARM64 或 x86_64 架构
+        - Docker 20.10+
+        - 支持 ARM64 或 x86_64 架构
 
-## 快速开始
+        ## 快速开始
 
-1. 解压包文件
-2. 运行部署脚本:
-   \`\`\`bash
-   chmod +x deploy.sh
-   ./deploy.sh
-   \`\`\`
+            1. 解压包文件
+            2. 运行部署脚本:
+            \`\`\`bash
+            chmod +x deploy.sh
+            ./deploy.sh
+            \`\`\`
 
-3. 停止服务:
-   \`\`\`bash
-   chmod +x stop.sh
-   ./stop.sh
-   \`\`\`
+            3. 停止服务:
+            \`\`\`bash
+            chmod +x stop.sh
+            ./stop.sh
+            \`\`\`
 
-## 端口说明
+            ## 端口说明
 
-- 8080: HTTP代理
-- 8082: TCP代理  
-- 8084: 对等节点
-- 8085: TCP协议
+            - 8080: HTTP代理
+            - 8082: TCP代理  
+            - 8084: 对等节点
+            - 8085: TCP协议
 
-## 配置
+            ## 配置
 
-编辑 \`config.json\` 文件来修改配置。
+            编辑 \`config.json\` 文件来修改配置。
 
-## 日志
+            ## 日志
 
-查看日志:
-\`\`\`bash
-docker logs -f qproxy
-\`\`\`
+            查看日志:
+            \`\`\`bash
+            docker logs -f qproxy
+            \`\`\`
 
-## 数据持久化
+            ## 数据持久化
 
-日志数据存储在 Docker 卷 \`qproxy_logs\` 中。
-EOF
+            日志数据存储在 Docker 卷 \`qproxy_logs\` 中。
+            EOF
 
-        chmod +x $PACKAGE_NAME/deploy.sh
-        chmod +x $PACKAGE_NAME/stop.sh
+                    chmod +x $PACKAGE_NAME/deploy.sh
+                    chmod +x $PACKAGE_NAME/stop.sh
 
-    - name: Create compressed packages
-      run: |
-        PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
-        
-        # 创建 tar.gz 包
-        tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
-        
-        # 创建 zip 包
-        zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
+                - name: Create compressed packages
+                run: |
+                    PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
+                    
+                    # 创建 tar.gz 包
+                    tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
+                    
+                    # 创建 zip 包
+                    zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: qproxy-docker-package
-        path: |
-          qproxy-docker-*.tar.gz
-          qproxy-docker-*.zip
-        retention-days: 30
+                - name: Upload artifacts
+                uses: actions/upload-artifact@v4
+                with:
+                    name: qproxy-docker-package
+                    path: |
+                    qproxy-docker-*.tar.gz
+                    qproxy-docker-*.zip
+                    retention-days: 30
 
   # 发布到 GitHub Releases
   release:
@@ -182,7 +182,7 @@ EOF
       with:
         upload_url: ${{ github.event.release.upload_url }}
         asset_path: ./qproxy-docker-*.tar.gz
-        asset_name: qproxy-docker-${{ steps.version.outputs.version }}.tar.gz
+        asset_name: qproxy-docker-${{ needs.build-docker.outputs.version }}.tar.gz
         asset_content_type: application/gzip
         
     - name: Upload release assets (zip)
@@ -192,5 +192,5 @@ EOF
       with:
         upload_url: ${{ github.event.release.upload_url }}
         asset_path: ./qproxy-docker-*.zip
-        asset_name: qproxy-docker-${{ steps.version.outputs.version }}.zip
+        asset_name: qproxy-docker-${{ needs.build-docker.outputs.version }}.zip
         asset_content_type: application/zip 
