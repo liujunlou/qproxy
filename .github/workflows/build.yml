@@ -161,6 +161,10 @@ jobs:
             qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
           retention-days: 30
 
+      - name: Tag Docker image as latest
+        run: |
+          docker tag qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }} qproxy:latest
+
   release:
     needs: build-docker
     runs-on: ubuntu-latest
