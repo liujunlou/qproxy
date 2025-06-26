@@ -26,13 +26,13 @@ jobs:
         echo "VERSION=$VERSION"
 
     - name: Build multi-arch Docker image
-      uses: docker/build-push-action@v5
+      uses: docker/build-push-action@v4
       with:
         context: .
         platforms: linux/amd64,linux/arm64
         push: false
         load: false
-        outputs: type=docker,dest=/tmp/qproxy.tar
+        outputs: type=oci,dest=/tmp/qproxy.tar
 
     - name: Create deployment package
       run: |
@@ -81,29 +81,29 @@ jobs:
         echo "View logs: docker logs -f qproxy"
         EOF
 
-                # 创建停止脚本
-                cat > $PACKAGE_NAME/stop.sh << 'EOF'
-        #!/bin/bash
+        # 创建停止脚本
+        cat > $PACKAGE_NAME/stop.sh << 'EOF'
+            #!/bin/bash
 
-        echo "Stopping QProxy service..."
-        docker stop qproxy 2>/dev/null || true
-        docker rm qproxy 2>/dev/null || true
+            echo "Stopping QProxy service..."
+            docker stop qproxy 2>/dev/null || true
+            docker rm qproxy 2>/dev/null || true
 
-        echo "Service stopped"
-        EOF
+            echo "Service stopped"
+            EOF
 
-        # 创建README
-        cat > $PACKAGE_NAME/README.md << EOF
-        # QProxy Docker 部署包
+                    # 创建README
+                    cat > $PACKAGE_NAME/README.md << EOF
+            # QProxy Docker 部署包
 
-        版本: ${{ steps.version.outputs.version }}
+            版本: ${{ steps.version.outputs.version }}
 
-        ## 系统要求
+            ## 系统要求
 
-        - Docker 20.10+
-        - 支持 ARM64 或 x86_64 架构
+            - Docker 20.10+
+            - 支持 ARM64 或 x86_64 架构
 
-        ## 快速开始
+            ## 快速开始
 
             1. 解压包文件
             2. 运行部署脚本:
@@ -141,27 +141,27 @@ jobs:
             日志数据存储在 Docker 卷 \`qproxy_logs\` 中。
             EOF
 
-                    chmod +x $PACKAGE_NAME/deploy.sh
-                    chmod +x $PACKAGE_NAME/stop.sh
+            chmod +x $PACKAGE_NAME/deploy.sh
+            chmod +x $PACKAGE_NAME/stop.sh
 
-                - name: Create compressed packages
-                run: |
-                    PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
-                    
-                    # 创建 tar.gz 包
-                    tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
-                    
-                    # 创建 zip 包
-                    zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
+    - name: Create compressed packages
+      run: |
+        PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
+        
+        # 创建 tar.gz 包
+        tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
+        
+        # 创建 zip 包
+        zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
 
-                - name: Upload artifacts
-                uses: actions/upload-artifact@v4
-                with:
-                    name: qproxy-docker-package
-                    path: |
-                    qproxy-docker-*.tar.gz
-                    qproxy-docker-*.zip
-                    retention-days: 30
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: qproxy-docker-package
+        path: |
+          qproxy-docker-*.tar.gz
+          qproxy-docker-*.zip
+        retention-days: 30
 
   # 发布到 GitHub Releases
   release:
