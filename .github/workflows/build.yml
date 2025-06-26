@@ -59,10 +59,14 @@ jobs:
           context: .
           platforms: linux/${{ matrix.arch }}
           push: false
-          load: false
-          outputs: type=oci,dest=/tmp/qproxy-${{ matrix.arch }}.tar
+          load: true
+          tags: qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Save Docker image
+        run: |
+          docker save qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }} -o /tmp/qproxy-${{ matrix.arch }}.tar
 
       - name: Create deployment package
         run: |
