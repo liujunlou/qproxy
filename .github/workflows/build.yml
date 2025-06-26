@@ -80,6 +80,8 @@ jobs:
           echo "开始部署 QProxy..."
           echo "Loading Docker image..."
           docker load -i qproxy-${{ matrix.arch }}.tar
+          echo "Tagging Docker image as latest..."
+          docker tag qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }} qproxy:latest
           echo "Creating Docker network..."
           docker network create qproxy-network 2>/dev/null || true
           echo "Starting QProxy container..."
