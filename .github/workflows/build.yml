@@ -1,4 +1,4 @@
-name: Build QProxy Docker
+name: Build QProxy Docker (Split Arch)
 
 on:
   push:
@@ -11,151 +11,151 @@ on:
 jobs:
   build-docker:
     runs-on: ubuntu-latest
-    
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    env:
+      DOCKER_ARCH: ${{ matrix.arch }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Cache Docker layers
-      uses: actions/cache@v4
-      with:
-        path: /tmp/.buildx-cache
-        key: ${{ runner.os }}-buildx-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}-${{ matrix.arch }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ matrix.arch }}
 
-    - name: Get version
-      id: version
-      run: |
-        VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
-        echo "VERSION=$VERSION"
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION"
 
-    - name: Generate Cargo.lock
-      run: |
-        cargo generate-lockfile
-        cargo update
+      - name: Generate Cargo.lock
+        run: |
+          cargo generate-lockfile
+          cargo update
 
-    - name: Build multi-arch Docker image
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        platforms: linux/amd64,linux/arm64
-        push: false
-        load: false
-        outputs: type=oci,dest=/tmp/qproxy.tar
-        cache-from: type=local,src=/tmp/.buildx-cache
-        cache-to: type=local,dest=/tmp/.buildx-cache
+      - name: Build Docker image for ${{ matrix.arch }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: false
+          outputs: type=oci,dest=/tmp/qproxy-${{ matrix.arch }}.tar
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
 
-    - name: Create deployment package
-      run: |
-        PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
-        mkdir -p $PACKAGE_NAME
-        cp /tmp/qproxy.tar $PACKAGE_NAME/
-        cp config.json $PACKAGE_NAME/
-        
-        cat > $PACKAGE_NAME/deploy.sh << 'EOF'
-        #!/bin/bash
-        set -e
-        echo "开始部署 QProxy..."
-        echo "Loading Docker image..."
-        docker load -i qproxy.tar
-        echo "Creating Docker network..."
-        docker network create qproxy-network 2>/dev/null || true
-        echo "Starting QProxy container..."
-        docker run -d \
-          --name qproxy \
-          --network qproxy-network \
-          -p 8080:8080 \
-          -p 8082:8082 \
-          -p 8084:8084 \
-          -p 8085:8085 \
-          -v $(pwd)/config.json:/app/config.json:ro \
-          -v qproxy_logs:/app/logs \
-          --restart unless-stopped \
-          qproxy:latest
-        echo "Deployment completed!"
-        echo "Container status: docker ps"
-        echo "View logs: docker logs -f qproxy"
-        EOF
-        
-        cat > $PACKAGE_NAME/stop.sh << 'EOF'
-        #!/bin/bash
-        echo "Stopping QProxy service..."
-        docker stop qproxy 2>/dev/null || true
-        docker rm qproxy 2>/dev/null || true
-        echo "Service stopped"
-        EOF
-        
-        cat > $PACKAGE_NAME/README.md << 'EOF'
-        # QProxy Docker 部署包
-        
-        ## 系统要求
-        - Docker 20.10+
-        - 支持 ARM64 或 x86_64 架构
-        
-        ## 快速开始
-        1. 解压包文件
-        2. 运行部署脚本:
-           ```bash
-           chmod +x deploy.sh
-           ./deploy.sh
-           ```
-        3. 停止服务:
-           ```bash
-           chmod +x stop.sh
-           ./stop.sh
-           ```
-        
-        ## 端口说明
-        - 8080: HTTP代理
-        - 8082: TCP代理  
-        - 8084: 对等节点
-        - 8085: TCP协议
-        
-        ## 配置
-        编辑 `config.json` 文件来修改配置。
-        
-        ## 日志
-        查看日志:
-        ```bash
-        docker logs -f qproxy
-        ```
-        
-        ## 数据持久化
-        日志数据存储在 Docker 卷 `qproxy_logs` 中。
-        EOF
-        
-        chmod +x $PACKAGE_NAME/deploy.sh
-        chmod +x $PACKAGE_NAME/stop.sh
+      - name: Create deployment package
+        run: |
+          PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}"
+          mkdir -p $PACKAGE_NAME
+          cp /tmp/qproxy-${{ matrix.arch }}.tar $PACKAGE_NAME/
+          cp config.json $PACKAGE_NAME/
+          cat > $PACKAGE_NAME/deploy.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          echo "开始部署 QProxy..."
+          echo "Loading Docker image..."
+          docker load -i qproxy-${{ matrix.arch }}.tar
+          echo "Creating Docker network..."
+          docker network create qproxy-network 2>/dev/null || true
+          echo "Starting QProxy container..."
+          docker run -d \
+            --name qproxy \
+            --network qproxy-network \
+            -p 8080:8080 \
+            -p 8082:8082 \
+            -p 8084:8084 \
+            -p 8085:8085 \
+            -v $(pwd)/config.json:/app/config.json:ro \
+            -v qproxy_logs:/app/logs \
+            --restart unless-stopped \
+            qproxy:latest
+          echo "Deployment completed!"
+          echo "Container status: docker ps"
+          echo "View logs: docker logs -f qproxy"
+          EOF
+          cat > $PACKAGE_NAME/stop.sh << 'EOF'
+          #!/bin/bash
+          echo "Stopping QProxy service..."
+          docker stop qproxy 2>/dev/null || true
+          docker rm qproxy 2>/dev/null || true
+          echo "Service stopped"
+          EOF
+          cat > $PACKAGE_NAME/README.md << 'EOF'
+          # QProxy Docker 部署包
+          
+          ## 系统要求
+          - Docker 20.10+
+          - 支持 ARM64 或 x86_64 架构
+          
+          ## 快速开始
+          1. 解压包文件
+          2. 运行部署脚本:
+             ```bash
+             chmod +x deploy.sh
+             ./deploy.sh
+             ```
+          3. 停止服务:
+             ```bash
+             chmod +x stop.sh
+             ./stop.sh
+             ```
+          
+          ## 端口说明
+          - 8080: HTTP代理
+          - 8082: TCP代理  
+          - 8084: 对等节点
+          - 8085: TCP协议
+          
+          ## 配置
+          编辑 `config.json` 文件来修改配置。
+          
+          ## 日志
+          查看日志:
+          ```bash
+          docker logs -f qproxy
+          ```
+          
+          ## 数据持久化
+          日志数据存储在 Docker 卷 `qproxy_logs` 中。
+          EOF
+          chmod +x $PACKAGE_NAME/deploy.sh
+          chmod +x $PACKAGE_NAME/stop.sh
 
-    - name: Create compressed packages
-      run: |
-        PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}"
-        tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
-        zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
+      - name: Create compressed packages
+        run: |
+          PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}"
+          tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
+          zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
 
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: qproxy-docker-package
-        path: |
-          qproxy-docker-*.tar.gz
-          qproxy-docker-*.zip
-        retention-days: 30
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qproxy-docker-package-${{ matrix.arch }}
+          path: |
+            qproxy-docker-*.tar.gz
+            qproxy-docker-*.zip
+          retention-days: 30
 
   release:
     needs: build-docker
@@ -166,7 +166,7 @@ jobs:
     - name: Download artifacts
       uses: actions/download-artifact@v4
       with:
-        name: qproxy-docker-package
+        name: qproxy-docker-package-${{ matrix.arch }}
         
     - name: Upload release assets
       uses: actions/upload-release-asset@v1
@@ -175,7 +175,7 @@ jobs:
       with:
         upload_url: ${{ github.event.release.upload_url }}
         asset_path: ./qproxy-docker-*.tar.gz
-        asset_name: qproxy-docker-${{ steps.version.outputs.version }}.tar.gz
+        asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
         asset_content_type: application/gzip
         
     - name: Upload release assets (zip)
@@ -185,5 +185,5 @@ jobs:
       with:
         upload_url: ${{ github.event.release.upload_url }}
         asset_path: ./qproxy-docker-*.zip
-        asset_name: qproxy-docker-${{ steps.version.outputs.version }}.zip
+        asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
         asset_content_type: application/zip 
