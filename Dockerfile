@@ -11,21 +11,8 @@ RUN apt-get update && apt-get install -y \
 # 设置工作目录
 WORKDIR /app
 
-# 复制Cargo文件
-COPY Cargo.toml Cargo.lock ./
-COPY qproxy-macros/Cargo.toml ./qproxy-macros/
-COPY proto/ ./proto/
-
-# 创建虚拟项目来缓存依赖
-RUN mkdir -p src qproxy-macros/src && \
-    echo "fn main() {}" > src/main.rs && \
-    echo "fn main() {}" > qproxy-macros/src/lib.rs && \
-    cargo build --release && \
-    rm -rf src qproxy-macros/src
-
-# 复制源代码
-COPY src/ ./src/
-COPY qproxy-macros/src/ ./qproxy-macros/src/
+# 复制所有源代码
+COPY . .
 
 # 构建应用
 RUN cargo build --release
