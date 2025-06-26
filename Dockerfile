@@ -14,6 +14,9 @@ WORKDIR /app
 # 复制所有源代码
 COPY . .
 
+# 删除现有的Cargo.lock并重新生成
+RUN rm -f Cargo.lock && cargo generate-lockfile
+
 # 构建应用
 RUN cargo build --release
 
