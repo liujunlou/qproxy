@@ -27,7 +27,7 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
     "http": {                               // http代理服务器，downstream为代理下游地址
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": ["http://localhost:8081"]
     },
     "grpc": {                               // grpc代理服务器，downstream为代理下游地址
         "enabled": true,
@@ -35,12 +35,12 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
         "port": 8081,
         "downstream": ["localhost:9081"]
     },
-    "tcp": nill,
+    "tcp": null,
     "sync": {                               // 同步服务配置，仅在回放节点开启，来拉取待回放流量
         "enabled": false,
         "shards": 1,
         "interval": 1000,
-        "peer": null,
+        "peer": null
     },
     "redis": {                               // redis服务配置
         "url": "redis://username:password@localhost:6379",
@@ -75,7 +75,7 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
     "http": {                                 // http代理服务器，downstream为代理下游地址
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": ["http://localhost:8081"]
     },
     "grpc": {                                 // grpc代理服务器，downstream为代理下游地址
         "enabled": true,
@@ -86,12 +86,12 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
     "tcp": null,
     "sync": {                                 // 同步服务配置，仅在回放节点开启，来拉取待回放流量
         "enabled": false,
-        "shards": 1
+        "shards": 1,
         "peer": {
             "host": "127.0.0.1",
             "port": 8084,
             "tls": true
-        },
+        }
     },
     "redis": {                               // redis服务配置
         "url": "redis://username:password@localhost:6379",
