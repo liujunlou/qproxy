@@ -3,19 +3,19 @@
     "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": ["http://localhost:9080"]
+        "downstream": ["http://localhost:8080"]
     },
     "grpc": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8081,
-        "downstream": ["localhost:9081"]
+        "downstream": ["localhost:8081"]
     },
     "tcp": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
-        "downstream": ["localhost:9082"],
+        "downstream": ["localhost:8082"],
         "tls": {
             "tls_cert": "cert.pem",
             "tls_key": "key.pem"
@@ -27,7 +27,7 @@
         "interval": 1000,
         "peer": {
             "host": "127.0.0.1",
-            "port": 8084,
+            "port": 8080,
             "tls": true
         }
     },

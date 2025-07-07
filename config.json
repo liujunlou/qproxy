@@ -2,7 +2,7 @@
     "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": []
     },
     "tcp": {
         "enabled": true,

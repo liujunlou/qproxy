@@ -3,23 +3,20 @@
     "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": ["http://localhost:9080"]
+        "downstream": []
     },
     "grpc": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8081,
-        "downstream": ["localhost:9081"]
+        "downstream": []
     },
     "tcp": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8082,
-        "downstream": ["localhost:9082"],
-        "tls": {
-            "tls_cert": "/Users/mr.xi/workspace/logs/rsa/cert.pem",
-            "tls_key": "/Users/mr.xi/workspace/logs/rsa/private_key.pem"
-        }
+        "downstream": [],
+        "tls": null
     },
     "sync": {
         "enabled": false,
@@ -57,12 +54,12 @@
                 }
             ],
             "zookeeper": {
-                "address": "localhost:2181",
+                "hosts": ["localhost:2181"],
                 "base_path": "/qproxy"
             },
             "kubernetes": {
                 "namespace": "default",
-                "service_account_token": null
+                "service_account_token_path": null
             }
         }
     },
