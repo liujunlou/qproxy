@@ -1,4 +1,4 @@
-name: Build QProxy
+name: Build QProxy Docker (Split Arch)
 
 on:
   push:
@@ -9,78 +9,173 @@ on:
     types: [ published ]
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
+  build-docker:
+    runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: qproxy-linux-x86_64
-
+        arch: [amd64, arm64]
+    env:
+      DOCKER_ARCH: ${{ matrix.arch }}
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        target: ${{ matrix.target }}
-        override: true
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-    - name: Install system dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y pkg-config libssl-dev protobuf-compiler
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Cache dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          ${{ runner.os }}-cargo-
+      - name: Cache Docker layers
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.buildx-cache
+          key: ${{ runner.os }}-buildx-${{ github.sha }}-${{ matrix.arch }}
+          restore-keys: |
+            ${{ runner.os }}-buildx-${{ matrix.arch }}
 
-    - name: Build release
-      run: cargo build --release --target ${{ matrix.target }}
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep '^version = ' Cargo.toml | cut -d'"' -f2)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "VERSION=$VERSION"
 
-    - name: Upload artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.artifact_name }}
-        path: target/${{ matrix.target }}/release/qproxy*
+      - name: Generate Cargo.lock
+        run: |
+          cargo generate-lockfile
+          cargo update
 
-  # 创建发布包
+      - name: Build Docker image for ${{ matrix.arch }}
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: false
+          load: true
+          tags: qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache
+
+      - name: Save Docker image
+        run: |
+          docker save qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }} -o /tmp/qproxy-${{ matrix.arch }}.tar
+
+      - name: Create deployment package
+        run: |
+          PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}"
+          mkdir -p $PACKAGE_NAME
+          cp /tmp/qproxy-${{ matrix.arch }}.tar $PACKAGE_NAME/
+          cp config.json $PACKAGE_NAME/
+          cat > $PACKAGE_NAME/deploy.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          echo "开始部署 QProxy..."
+          echo "Loading Docker image..."
+          docker load -i qproxy-${{ matrix.arch }}.tar
+          echo "Tagging Docker image as latest..."
+          docker tag qproxy:${{ steps.version.outputs.version }}-${{ matrix.arch }} qproxy:latest
+          echo "Creating Docker network..."
+          docker network create qproxy-network 2>/dev/null || true
+          echo "Starting QProxy container..."
+          docker run -d \
+            --name host \
+            --network host \
+            -p 8080:8080 \
+            -p 8082:8082 \
+            -p 8084:8084 \
+            -p 8085:8085 \
+            -v $(pwd)/config.json:/app/config.json:ro \
+            -v $(pwd)/logs:/app/logs \
+            --restart unless-stopped \
+            qproxy:latest
+          echo "Deployment completed!"
+          echo "Container status: docker ps"
+          echo "View logs: docker logs -f qproxy"
+          EOF
+          cat > $PACKAGE_NAME/stop.sh << 'EOF'
+          #!/bin/bash
+          echo "Stopping QProxy service..."
+          docker stop qproxy 2>/dev/null || true
+          docker rm qproxy 2>/dev/null || true
+          echo "Service stopped"
+          EOF
+          cat > $PACKAGE_NAME/README.md << 'EOF'
+          # QProxy Docker 部署包
+          
+          ## 系统要求
+          - Docker 20.10+
+          - 支持 ARM64 或 x86_64 架构
+          
+          ## 快速开始
+          1. 解压包文件
+          2. 运行部署脚本:
+             ```bash
+             chmod +x deploy.sh
+             ./deploy.sh
+             ```
+          3. 停止服务:
+             ```bash
+             chmod +x stop.sh
+             ./stop.sh
+             ```
+          
+          ## 端口说明
+          - 8080: HTTP代理
+          - 8082: TCP代理  
+          - 8084: 对等节点
+          - 8085: TCP协议
+          
+          ## 配置
+          编辑 `config.json` 文件来修改配置。
+          
+          ## 日志
+          查看日志:
+          ```bash
+          docker logs -f qproxy
+          ```
+          
+          ## 数据持久化
+          日志数据存储在 Docker 卷 `qproxy_logs` 中。
+          EOF
+          chmod +x $PACKAGE_NAME/deploy.sh
+          chmod +x $PACKAGE_NAME/stop.sh
+
+      - name: Create compressed packages
+        run: |
+          PACKAGE_NAME="qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}"
+          tar -czf "${PACKAGE_NAME}.tar.gz" "$PACKAGE_NAME"
+          zip -r "${PACKAGE_NAME}.zip" "$PACKAGE_NAME"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qproxy-docker-package-${{ matrix.arch }}
+          path: |
+            qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
+            qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
+          retention-days: 30
+
   release:
-    needs: build
+    needs: build-docker
     runs-on: ubuntu-latest
     if: github.event_name == 'release'
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
     
     steps:
-    - name: Download all artifacts
+    - name: Download artifacts
       uses: actions/download-artifact@v4
-      
-    - name: Create release archive
-      run: |
-        mkdir -p release
-        for artifact in qproxy-*; do
-          if [[ -d "$artifact" ]]; then
-            cd "$artifact"
-            for file in *; do
-              if [[ -f "$file" ]]; then
-                cp "$file" "../release/"
-              fi
-            done
-            cd ..
-          fi
-        done
-        
-        cd release
-        tar -czf qproxy-release.tar.gz *
-        zip -r qproxy-release.zip *
+      with:
+        name: qproxy-docker-package-${{ matrix.arch }}
         
     - name: Upload release assets
       uses: actions/upload-release-asset@v1
@@ -88,6 +183,16 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: ./release/qproxy-release.tar.gz
-        asset_name: qproxy-release.tar.gz
-        asset_content_type: application/gzip 
+        asset_path: ./qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
+        asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.tar.gz
+        asset_content_type: application/gzip
+        
+    - name: Upload release assets (zip)
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
+        asset_name: qproxy-docker-${{ steps.version.outputs.version }}-${{ matrix.arch }}.zip
+        asset_content_type: application/zip 

@@ -23,89 +23,143 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ### Record 节点配置示例：
 ```json
 {
-    "mode": "Record",                       // 节点模式，录制节点用于公安网
-    "http": {                               // http代理服务器，downstream为代理下游地址
+    "mode": "Record", // 公安网配置
+    "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": [] // Record 节点没有下游服务
     },
-    "grpc": {                               // grpc代理服务器，downstream为代理下游地址
+    "grpc": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8081,
-        "downstream": ["localhost:9081"]
+        "downstream": ["cmp_host:50051"] // 公安网 cmp grpc server host:port 格式: host:port,host:port
     },
-    "tcp": nill,
-    "sync": {                               // 同步服务配置，仅在回放节点开启，来拉取待回放流量
+    "tcp": null,
+    "sync": {       // Record 节点不开启流量录制功能
         "enabled": false,
         "shards": 1,
         "interval": 1000,
-        "peer": null,
+        "peer": null
     },
-    "redis": {                               // redis服务配置
-        "url": "redis://username:password@localhost:6379",
+    "redis": {
+        "url": "redis://:password@localhost:6379",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3
     },
-    "service_discovery": {                   // 当前可用区的服务发现模块，用于回放真实流量
-        "provider": "static",
+    "service_discovery": {
+        "provider": "static", // 静态配置做服务发现，下面的地址不需要配置
         "config": {
-            "static_services": [],
+            "static_services": [
+                {
+                    "name": "user-service",
+                    "host": "localhost",
+                    "port": 8085,
+                    "metadata": {
+                        "version": "1.0",
+                        "environment": "local"
+                    }
+                },
+                {
+                    "name": "order-service",
+                    "host": "localhost",
+                    "port": 8086,
+                    "metadata": {
+                        "version": "1.0",
+                        "environment": "local"
+                    }
+                }
+            ],
             "zookeeper": {
-                "address": "localhost:2181",
+                "hosts": ["localhost:2181"],
                 "base_path": "/qproxy"
             },
             "kubernetes": {
                 "namespace": "default",
-                "service_account_token": null
+                "service_account_token_path": null
             }
         }
     },
-    "logging": {                             // 日志配置
-      // ...
+    "logging": {
+        "level": "info",
+        "directory": "logs",
+        "file_name_pattern": "qproxy_",
+        "rotation": {
+            "max_size_mb": 100,
+            "max_files": 10,
+            "compress": true
+        },
+        "format": {
+            "timestamp": true,
+            "level": true,
+            "target": true,
+            "thread_id": true,
+            "file": true,
+            "line_number": true
+        }
     }
-}
+} 
 ```
 
 ### Playback 节点配置示例：
 ```json
 {
-    "mode": "Playback",                       // 节点模式，回放节点用于警务网、互联网
-    "http": {                                 // http代理服务器，downstream为代理下游地址
+    "mode": "Forward", // 警务网，互联网配置
+    "http": {
         "host": "127.0.0.1",
         "port": 8080,
-        "downstream": "http://localhost:8081"
+        "downstream": ["http://localhost:8080"] // 公安网 http 代理地址
     },
-    "grpc": {                                 // grpc代理服务器，downstream为代理下游地址
+    "grpc": {
         "enabled": true,
         "host": "127.0.0.1",
         "port": 8081,
-        "downstream": ["localhost:9081"]
+        "downstream": ["localhost:8081"] // 警务网，互联网同网段 cmp grpc server host:port 格式: host:port,host:port
     },
     "tcp": null,
-    "sync": {                                 // 同步服务配置，仅在回放节点开启，来拉取待回放流量
-        "enabled": false,
-        "shards": 1
-        "peer": {
-            "host": "127.0.0.1",
-            "port": 8084,
+    "sync": {
+        "enabled": true,
+        "shards": 1,
+        "interval": 1000,
+        "peer": {   // 公安网 http 代理地址
+            "host": "127.0.0.1", 
+            "port": 8080,
             "tls": true
-        },
+        }
     },
-    "redis": {                               // redis服务配置
-        "url": "redis://username:password@localhost:6379",
+    "redis": {
+        "url": "redis://:password@localhost:6379",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3
     },
-    "service_discovery": {                   // 当前可用区的服务发现模块，用于回放真实流量
-        "provider": "static",
+    "service_discovery": {
+        "provider": "static", // 静态配置做服务发现，下面的地址不需要配置
         "config": {
-            "static_services": [],
-            "zookeeper": {
-                "address": "localhost:2181",
-                "base_path": "/qproxy"
+            "static_services": [
+                {
+                    "name": "user-service",
+                    "host": "localhost",
+                    "port": 8085,
+                    "metadata": {
+                        "version": "1.0",
+                        "environment": "local"
+                    }
+                },
+                {
+                    "name": "order-service",
+                    "host": "localhost",
+                    "port": 8086,
+                    "metadata": {
+                        "version": "1.0",
+                        "environment": "local"
+                    }
+                }
+            ],
+            "consul": {
+                "address": "localhost:8500",
+                "datacenter": "dc1"
             },
             "kubernetes": {
                 "namespace": "default",
@@ -113,10 +167,25 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
             }
         }
     },
-    "logging": {                             // 日志配置
-      // ...
+    "logging": {
+        "level": "info",
+        "directory": "logs",
+        "file_name_pattern": "qproxy_",
+        "rotation": {
+            "max_size_mb": 100,
+            "max_files": 10,
+            "compress": true
+        },
+        "format": {
+            "timestamp": true,
+            "level": true,
+            "target": true,
+            "thread_id": true,
+            "file": true,
+            "line_number": true
+        }
     }
-}
+} 
 ```
 
 ## 编译和部署
