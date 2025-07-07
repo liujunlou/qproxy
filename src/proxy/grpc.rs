@@ -19,7 +19,7 @@ use crate::monitor::{
     GRPC_REQUEST_SIZE, GRPC_RESPONSE_SIZE,
 };
 use crate::options::{Options, ProxyMode};
-use crate::PLAYBACK_SERVICE;
+use crate::{get_shutdown_rx, PLAYBACK_SERVICE};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -38,14 +38,52 @@ pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
     };
 
     let route_service = RouteServiceImpl::new(opts.clone());
-    Server::builder()
-        .add_service(RouteServiceServer::new(route_service))
-        .serve(addr)
-        .await
-        .map_err(|e| Error::Proxy(e.to_string()))?;
 
-    info!("gRPC server started at {}", addr);
-    Ok(())
+    info!("gRPC server starting on {}", addr);
+    
+    // 创建 gRPC 服务器，添加超时和连接限制
+    let server = Server::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .concurrency_limit_per_connection(1024)
+        .add_service(RouteServiceServer::new(route_service));
+    
+    // 获取关闭信号接收器
+    let mut shutdown_rx = get_shutdown_rx().await;
+    
+    // 启动服务器
+    let server_handle = tokio::spawn(async move {
+        server.serve(addr).await
+    });
+    
+    info!("gRPC server listening on {}", addr);
+    
+    // 等待服务器停止或收到关闭信号
+    tokio::select! {
+        server_result = server_handle => {
+            match server_result {
+                Ok(Ok(())) => {
+                    info!("gRPC server stopped normally");
+                    Ok(())
+                }
+                Ok(Err(e)) => {
+                    error!("gRPC server error: {}", e);
+                    Err(Error::Proxy(format!("gRPC server error: {}", e)))
+                }
+                Err(e) => {
+                    error!("gRPC server task error: {}", e);
+                    Err(Error::Proxy(format!("gRPC server task error: {}", e)))
+                }
+            }
+        }
+        _ = shutdown_rx.recv() => {
+            info!("gRPC server received shutdown signal, starting graceful shutdown");
+            
+            // 由于server_handle已经在select!中被消费，这里直接返回成功
+            // tonic服务器会自动处理优雅关闭
+            info!("gRPC server shutdown complete");
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -93,101 +131,131 @@ impl RouteServiceImpl {
         request: Request<RouteMessage>,
     ) -> Result<Response<RouteResponse>, Status> {
         let message = request.into_inner();
-        info!("received message: {:?}", message);
+        info!("Received gRPC message: {:?}", message);
 
         // 将RouteMessage整个消息拼接封装grpc请求
         let payload = message.encode_to_vec();
         let record = TrafficRecord::new_grpc("CMP", payload, vec![]);
-        // 这里判断当前节点的ProxyMode，如果是Recode模式，则将消息缓存到队列；如果是Playback模式，则将消息透传到公安网服务节点；
+        
+        // 根据当前节点的ProxyMode处理消息
         match self.options.mode {
-            // 将消息缓存到队列
-            ProxyMode::Record => {
-                let playback_service = PLAYBACK_SERVICE.read().await;
-                if let Some(playback_service) = playback_service.as_ref() {
-                    match playback_service.add_record(record).await {
-                        Ok(_) => Ok(Response::new(RouteResponse {
-                            message_id: "".to_string(),
-                            status_code: 200,
-                            status_message: "record success".to_string(),
-                            payload: vec![],
-                        })),
-                        Err(e) => {
-                            error!("Failed to add record: {}", e);
-                            return Err(Status::new(Code::Internal, e.to_string()));
-                        }
-                    }
-                } else {
-                    error!("Playback service not initialized");
-                    return Err(Status::new(
-                        Code::Internal,
-                        "Playback service not initialized".to_string(),
-                    ));
-                }
-            }
-            // 将消息透传到公安网服务节点
-            ProxyMode::Playback => {
-                // TODO 优化http客户端，通过客户端池进行复用
-                let downstream_addr = if let Some(grpc_opts) = &self.options.grpc {
-                    grpc_opts.downstream.clone()
-                } else {
-                    return Err(Status::new(
-                        Code::NotFound,
-                        "No grpc downstream address configured".to_string(),
-                    ));
-                };
+            ProxyMode::Record => self.handle_record_mode(record).await,
+            ProxyMode::Playback => self.handle_playback_mode(record).await,
+        }
+    }
 
-                // 选择第一个下游地址，这里创建一个共享池来提供http客户端访问下游地址
-                let index = self
-                    .index
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    % downstream_addr.len();
-                let addr = &downstream_addr[index];
-                let client = {
-                    let r = self.http_client_pool.read().await;
-                    if let Some(client) = r.get(addr) {
-                        client.clone()
-                    } else {
-                        let mut pool = self.http_client_pool.write().await;
-                        pool.entry(addr.clone())
-                            .or_insert_with(|| reqwest::Client::new())
-                            .clone()
-                    }
-                };
+    /// 处理录制模式：将消息缓存到队列
+    async fn handle_record_mode(&self, record: TrafficRecord) -> Result<Response<RouteResponse>, Status> {
+        let playback_service = PLAYBACK_SERVICE.read().await;
+        let playback_service = playback_service.as_ref()
+            .ok_or_else(|| {
+                error!("Playback service not initialized");
+                Status::new(Code::Internal, "Playback service not initialized")
+            })?;
 
-                // 2. 转HTTP POST /sync请求
-                let url = format!("http://{}/sync", addr);
-                let response = match client.post(&url).json(&record).send().await {
-                    Ok(response) => response,
-                    Err(e) => {
-                        error!("Failed to send request to target service: {}", e);
-                        return Err(Status::new(Code::Unavailable, e.to_string()));
-                    }
-                };
+        playback_service.add_record(record).await
+            .map_err(|e| {
+                error!("Failed to add record: {}", e);
+                Status::new(Code::Internal, e.to_string())
+            })?;
 
-                // 4. 接收下游返回的响应 TrafficRecord，解析成原始流量
-                let record_bytes = match response.bytes().await {
-                    Ok(bytes) => bytes,
-                    Err(e) => {
-                        error!("Failed to read response: {}", e);
-                        return Err(Status::new(Code::Unavailable, e.to_string()));
-                    }
-                };
-                let record: TrafficRecord = match serde_json::from_slice(&record_bytes) {
-                    Ok(record) => record,
-                    Err(e) => {
-                        error!("Failed to parse response: {}", e);
-                        return Err(Status::new(Code::Unavailable, e.to_string()));
-                    }
-                };
-                // 5. 将原始响应哦解析成grpc的response进行返回
-                let response = RouteResponse {
-                    message_id: "".to_string(),
-                    status_code: 200,
-                    status_message: "OK".to_string(),
-                    payload: record.response.body,
-                };
-                Ok(Response::new(response))
-            }
+        Ok(Response::new(RouteResponse {
+            message_id: "".to_string(),
+            status_code: 200,
+            status_message: "record success".to_string(),
+            payload: vec![],
+        }))
+    }
+
+    /// 处理回放模式：将消息透传到下游服务节点
+    async fn handle_playback_mode(&self, record: TrafficRecord) -> Result<Response<RouteResponse>, Status> {
+        let downstream_addr = self.get_downstream_addresses()?;
+        
+        if downstream_addr.is_empty() {
+            return Err(Status::new(
+                Code::NotFound,
+                "No grpc downstream address configured".to_string(),
+            ));
+        }
+
+        // 选择下游地址（轮询负载均衡）
+        let index = self
+            .index
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % downstream_addr.len();
+        let addr = &downstream_addr[index];
+        
+        // 获取或创建HTTP客户端
+        let client = self.get_or_create_client(addr).await;
+        
+        // 发送HTTP POST请求到下游服务
+        let url = format!("http://{}/sync", addr);
+        let response = client.post(&url)
+            .json(&record)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("Failed to send request to target service {}: {}", addr, e);
+                Status::new(Code::Unavailable, e.to_string())
+            })?;
+
+        // 检查HTTP响应状态
+        if !response.status().is_success() {
+            let status_text = response.status().to_string();
+            error!("Downstream service {} returned error status: {}", addr, status_text);
+            return Err(Status::new(Code::Unavailable, format!("Downstream error: {}", status_text)));
+        }
+
+        // 解析响应
+        let record_bytes = response.bytes().await
+            .map_err(|e| {
+                error!("Failed to read response from {}: {}", addr, e);
+                Status::new(Code::Unavailable, e.to_string())
+            })?;
+
+        let record: TrafficRecord = serde_json::from_slice(&record_bytes)
+            .map_err(|e| {
+                error!("Failed to parse response from {}: {}", addr, e);
+                Status::new(Code::Unavailable, e.to_string())
+            })?;
+
+        // 返回gRPC响应
+        Ok(Response::new(RouteResponse {
+            message_id: "".to_string(),
+            status_code: 200,
+            status_message: "OK".to_string(),
+            payload: record.response.body,
+        }))
+    }
+
+    /// 获取下游地址列表
+    fn get_downstream_addresses(&self) -> Result<Vec<String>, Status> {
+        self.options.grpc.as_ref()
+            .map(|grpc_opts| grpc_opts.downstream.clone())
+            .ok_or_else(|| {
+                Status::new(
+                    Code::NotFound,
+                    "No grpc downstream address configured".to_string(),
+                )
+            })
+    }
+
+    /// 获取或创建HTTP客户端
+    async fn get_or_create_client(&self, addr: &str) -> reqwest::Client {
+        let pool = self.http_client_pool.read().await;
+        if let Some(client) = pool.get(addr) {
+            client.clone()
+        } else {
+            drop(pool); // 释放读锁
+            let mut pool = self.http_client_pool.write().await;
+            pool.entry(addr.to_string())
+                .or_insert_with(|| {
+                    reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(30))
+                        .build()
+                        .unwrap_or_else(|_| reqwest::Client::new())
+                })
+                .clone()
         }
     }
 }

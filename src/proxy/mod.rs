@@ -37,23 +37,27 @@ impl ProxyServer {
         handles.push(http_handle);
 
         if let Some(tcp) = &self.options.tcp {
-            let tcp_handle = tokio::spawn(async move {
+            if tcp.enabled {
+                let tcp_handle = tokio::spawn(async move {
                 if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
                     error!("TCP server failed to start: {}", e);
                     std::process::exit(1);
-                }
-            });
-            handles.push(tcp_handle);
+                    }
+                });
+                handles.push(tcp_handle);
+            }
         }
 
         if let Some(grpc) = &self.options.grpc {
-            let grpc_handle = tokio::spawn(async move {
-                if let Err(e) = self::grpc::start_server(grpc_server.clone()).await {
-                    error!("gRPC server failed to start: {}", e);
-                    std::process::exit(1);
-                }
-            });
-            handles.push(grpc_handle);
+            if grpc.enabled {
+                let grpc_handle = tokio::spawn(async move {
+                    if let Err(e) = self::grpc::start_server(grpc_server.clone()).await {
+                        error!("gRPC server failed to start: {}", e);
+                        std::process::exit(1);
+                    }
+                });
+                handles.push(grpc_handle);
+            }
         }
 
         // 添加 HTTP 代理服务器的过滤器

@@ -283,8 +283,13 @@ impl MqttClient {
                                             }
 
                                             // 2. 然后触发本地回放
-                                            playback_service.trigger_replay(&record).await;
-                                            debug!("Triggered local replay for MQTT message from topic '{}'", topic);
+                                            if let Err(e) =
+                                                playback_service.trigger_replay(&record).await
+                                            {
+                                                error!("Failed to trigger local replay for MQTT message: {}", e);
+                                            } else {
+                                                debug!("Triggered local replay for MQTT message from topic '{}'", topic);
+                                            }
                                         } else {
                                             error!("Playback service not initialized");
                                         }
@@ -386,8 +391,13 @@ impl MqttClient {
                                             }
 
                                             // 2. 然后触发本地回放
-                                            playback_service.trigger_replay(&record).await;
-                                            debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                            if let Err(e) =
+                                                playback_service.trigger_replay(&record).await
+                                            {
+                                                error!("Failed to trigger local replay for Query message: {}", e);
+                                            } else {
+                                                debug!("Triggered local replay for Query message from topic '{}'", topic);
+                                            }
                                         } else {
                                             error!("Playback service not initialized");
                                         }
