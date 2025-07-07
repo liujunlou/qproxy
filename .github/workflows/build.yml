@@ -87,7 +87,7 @@ jobs:
           echo "Starting QProxy container..."
           docker run -d \
             --name qproxy \
-            --network qproxy-network \
+            --network host \
             -p 8080:8080 \
             -p 8082:8082 \
             -p 8084:8084 \
