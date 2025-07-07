@@ -31,7 +31,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 创建非root用户
-RUN groupadd -r qproxy && useradd -r -g qproxy qproxy
+# RUN groupadd -r qproxy && useradd -r -g qproxy qproxy
 
 # 设置工作目录
 WORKDIR /app
@@ -43,10 +43,11 @@ COPY --from=builder /app/target/release/qproxy /app/qproxy
 COPY config.json /app/config.json
 
 # 创建日志目录
-RUN mkdir -p /app/logs && chown -R qproxy:qproxy /app
+RUN mkdir -p /app/logs
+# && chown -R qproxy:qproxy /app
 
 # 切换到非root用户
-USER qproxy
+# USER qproxy
 
 # 暴露端口，这里通过docker启动指令来暴露端口
 # EXPOSE 8080 8082 8084 8085
