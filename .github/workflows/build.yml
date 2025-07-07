@@ -86,14 +86,14 @@ jobs:
           docker network create qproxy-network 2>/dev/null || true
           echo "Starting QProxy container..."
           docker run -d \
-            --name qproxy \
+            --name host \
             --network host \
             -p 8080:8080 \
             -p 8082:8082 \
             -p 8084:8084 \
             -p 8085:8085 \
             -v $(pwd)/config.json:/app/config.json:ro \
-            -v qproxy_logs:/app/logs \
+            -v $(pwd)/logs:/app/logs \
             --restart unless-stopped \
             qproxy:latest
           echo "Deployment completed!"
