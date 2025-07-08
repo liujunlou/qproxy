@@ -27,6 +27,8 @@ impl SyncService {
             .connect_timeout(Duration::from_secs(5))
             .build()?;
 
+        info!("Sync service initialized");
+
         Ok(Self {
             options: Arc::new(options.clone()),
             client: Arc::new(client),

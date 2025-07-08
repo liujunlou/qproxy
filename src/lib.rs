@@ -33,6 +33,7 @@ use once_cell::sync::Lazy;
 use options::Options;
 use playback::PlaybackService;
 use proxy::ProxyServer;
+
 use rustls::ServerConfig;
 use service_discovery::ServiceRegistry;
 use std::fs::File;
@@ -40,7 +41,7 @@ use std::io::BufReader;
 use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// 全局共享的回放服务实例
 /// 使用 once_cell 确保单例模式和线程安全
@@ -109,6 +110,121 @@ pub async fn start_qproxy(options: &Options) -> Result<Vec<JoinHandle<()>>, Erro
     Ok(handlers)
 }
 
+/// 测试Redis连接
+///
+/// 使用PING命令测试Redis连接是否正常
+///
+/// # 参数
+/// * `redis_url` - Redis连接URL
+///
+/// # 返回值
+/// 成功返回 `Ok(())`，失败返回 `Error::Redis`
+pub async fn test_redis_connection(connection_info: &redis::ConnectionInfo) -> Result<(), Error> {
+    let client = redis::Client::open(connection_info.clone())?;
+
+    match client.get_connection() {
+        Ok(mut conn) => {
+            // 使用PING命令测试连接
+            match redis::cmd("PING").query::<String>(&mut conn) {
+                Ok(pong) => {
+                    if pong == "PONG" {
+                        info!(
+                            "Successfully connected to Redis at {} (PING: {})",
+                            connection_info.addr.to_string(),
+                            pong
+                        );
+                        Ok(())
+                    } else {
+                        warn!(
+                            "Unexpected PING response from Redis at {}: {}",
+                            connection_info.addr.to_string(),
+                            pong
+                        );
+                        Ok(())
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to PING Redis at {}: {}",
+                        connection_info.addr.to_string(),
+                        e
+                    );
+                    Err(Error::Redis(e))
+                }
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to connect to Redis at {}: {}",
+                connection_info.addr.to_string(),
+                e
+            );
+            Err(Error::Redis(e))
+        }
+    }
+}
+
+/// 初始化全局回放服务
+///
+/// # 参数
+/// * `options` - 全局配置选项
+///
+/// # 错误
+/// 如果Redis连接失败，返回错误
+async fn init_playback_service(options: &Options) -> Result<(), Error> {
+    let mut service = PLAYBACK_SERVICE.write().await;
+    if service.is_none() {
+        let redis_options = &options.redis;
+
+        let connection_info = redis::ConnectionInfo {
+            addr: redis::ConnectionAddr::Tcp(
+                redis_options.host.clone(),
+                redis_options.port.unwrap_or(6379),
+            ),
+            redis: redis::RedisConnectionInfo {
+                db: 0,
+                username: redis_options.username.clone(),
+                password: redis_options.password.clone(),
+                protocol: redis::ProtocolVersion::RESP2,
+            },
+        };
+
+        // 测试Redis连接
+        test_redis_connection(&connection_info).await?;
+
+        // 创建Redis客户端
+        let client = redis::Client::open(connection_info)?;
+
+        // 创建连接管理器
+        match redis::aio::ConnectionManager::new(client).await {
+            Ok(conn_manager) => match PlaybackService::new(conn_manager).await {
+                Ok(playback_service) => {
+                    *service = Some(Arc::new(playback_service));
+                    info!(
+                        "Successfully initialized playback service with Redis at {}",
+                        redis_options.host.clone()
+                    );
+                    Ok(())
+                }
+                Err(e) => {
+                    error!("Failed to create playback service: {}", e);
+                    Err(e)
+                }
+            },
+            Err(e) => {
+                error!(
+                    "Failed to connect to Redis at {}: {}",
+                    redis_options.host.clone(),
+                    e
+                );
+                Err(Error::Redis(e))
+            }
+        }
+    } else {
+        Ok(())
+    }
+}
+
 /// 启动指标监控
 ///
 /// 启动指标监控任务，并将其添加到任务列表中
@@ -126,48 +242,6 @@ async fn start_metrics_collector(opts: &Options) -> Result<(), Error> {
         *collector = Some(Arc::new(metrics_collector_task));
     }
     Ok(())
-}
-
-/// 初始化全局回放服务
-///
-/// # 参数
-/// * `options` - 全局配置选项
-///
-/// # 错误
-/// 如果Redis连接失败，返回错误
-async fn init_playback_service(options: &Options) -> Result<(), Error> {
-    let mut service = PLAYBACK_SERVICE.write().await;
-    if service.is_none() {
-        let redis_options = &options.redis;
-        let redis_url = redis_options.url.clone();
-
-        // 创建Redis客户端
-        let client = redis::Client::open(redis_url.as_str())?;
-
-        // 创建连接管理器
-        match redis::aio::ConnectionManager::new(client).await {
-            Ok(conn_manager) => match PlaybackService::new(conn_manager).await {
-                Ok(playback_service) => {
-                    *service = Some(Arc::new(playback_service));
-                    info!(
-                        "Successfully initialized playback service with Redis at {}",
-                        redis_url
-                    );
-                    Ok(())
-                }
-                Err(e) => {
-                    error!("Failed to create playback service: {}", e);
-                    Err(e)
-                }
-            },
-            Err(e) => {
-                error!("Failed to connect to Redis at {}: {}", redis_url, e);
-                Err(Error::Redis(e))
-            }
-        }
-    } else {
-        Ok(())
-    }
 }
 
 /// 加载TLS证书和私钥

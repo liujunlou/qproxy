@@ -77,10 +77,22 @@ impl MetricsCollectorTask {
 
     async fn update_health_status(&self) {
         // 检查系统组件状态
-        let redis_status = if self.opts.redis.url.is_empty() {
+        let redis_status = if self.opts.redis.host.is_empty() {
             ServiceStatus::Up
         } else {
-            match redis::Client::open(self.opts.redis.url.as_str()) {
+            let connection_info = redis::ConnectionInfo {
+                addr: redis::ConnectionAddr::Tcp(
+                    self.opts.redis.host.clone(),
+                    self.opts.redis.port.unwrap_or(6379),
+                ),
+                redis: redis::RedisConnectionInfo {
+                    db: 0,
+                    username: self.opts.redis.username.clone(),
+                    password: self.opts.redis.password.clone(),
+                    protocol: redis::ProtocolVersion::RESP2,
+                },
+            };
+            match redis::Client::open(connection_info.clone()) {
                 Ok(client) => match client.get_connection_manager().await {
                     Ok(mut conn) => match conn.ping::<String>().await {
                         Ok(r) => {

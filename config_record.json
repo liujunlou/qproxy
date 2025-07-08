@@ -2,19 +2,19 @@
     "mode": "Record",
     "http": {
         "host": "127.0.0.1",
-        "port": 8180,
+        "port": 8080,
         "downstream": []
     },
     "grpc": {
         "enabled": true,
         "host": "127.0.0.1",
-        "port": 8181,
+        "port": 8081,
         "downstream": []
     },
     "tcp": {
         "enabled": false,
         "host": "127.0.0.1",
-        "port": 8182,
+        "port": 8082,
         "downstream": [],
         "tls": null
     },
@@ -25,7 +25,10 @@
         "peer": null
     },
     "redis": {
-        "url": "redis://mr@xi9999@localhost:6379",
+        "host": "localhost",
+        "port": 6379,
+        "username": "default",
+        "password": "Kx@34#fKN2vuA7Ym",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3

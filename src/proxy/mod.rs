@@ -39,9 +39,9 @@ impl ProxyServer {
         if let Some(tcp) = &self.options.tcp {
             if tcp.enabled {
                 let tcp_handle = tokio::spawn(async move {
-                if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
-                    error!("TCP server failed to start: {}", e);
-                    std::process::exit(1);
+                    if let Err(e) = self::tcp::start_server(tcp_server.clone()).await {
+                        error!("TCP server failed to start: {}", e);
+                        std::process::exit(1);
                     }
                 });
                 handles.push(tcp_handle);

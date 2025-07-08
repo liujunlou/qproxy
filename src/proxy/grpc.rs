@@ -40,23 +40,21 @@ pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
     let route_service = RouteServiceImpl::new(opts.clone());
 
     info!("gRPC server starting on {}", addr);
-    
+
     // 创建 gRPC 服务器，添加超时和连接限制
     let server = Server::builder()
         .timeout(std::time::Duration::from_secs(30))
         .concurrency_limit_per_connection(1024)
         .add_service(RouteServiceServer::new(route_service));
-    
+
     // 获取关闭信号接收器
     let mut shutdown_rx = get_shutdown_rx().await;
-    
+
     // 启动服务器
-    let server_handle = tokio::spawn(async move {
-        server.serve(addr).await
-    });
-    
+    let server_handle = tokio::spawn(async move { server.serve(addr).await });
+
     info!("gRPC server listening on {}", addr);
-    
+
     // 等待服务器停止或收到关闭信号
     tokio::select! {
         server_result = server_handle => {
@@ -77,7 +75,7 @@ pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
         }
         _ = shutdown_rx.recv() => {
             info!("gRPC server received shutdown signal, starting graceful shutdown");
-            
+
             // 由于server_handle已经在select!中被消费，这里直接返回成功
             // tonic服务器会自动处理优雅关闭
             info!("gRPC server shutdown complete");
@@ -136,7 +134,7 @@ impl RouteServiceImpl {
         // 将RouteMessage整个消息拼接封装grpc请求
         let payload = message.encode_to_vec();
         let record = TrafficRecord::new_grpc("CMP", payload, vec![]);
-        
+
         // 根据当前节点的ProxyMode处理消息
         match self.options.mode {
             ProxyMode::Record => self.handle_record_mode(record).await,
@@ -145,19 +143,20 @@ impl RouteServiceImpl {
     }
 
     /// 处理录制模式：将消息缓存到队列
-    async fn handle_record_mode(&self, record: TrafficRecord) -> Result<Response<RouteResponse>, Status> {
+    async fn handle_record_mode(
+        &self,
+        record: TrafficRecord,
+    ) -> Result<Response<RouteResponse>, Status> {
         let playback_service = PLAYBACK_SERVICE.read().await;
-        let playback_service = playback_service.as_ref()
-            .ok_or_else(|| {
-                error!("Playback service not initialized");
-                Status::new(Code::Internal, "Playback service not initialized")
-            })?;
+        let playback_service = playback_service.as_ref().ok_or_else(|| {
+            error!("Playback service not initialized");
+            Status::new(Code::Internal, "Playback service not initialized")
+        })?;
 
-        playback_service.add_record(record).await
-            .map_err(|e| {
-                error!("Failed to add record: {}", e);
-                Status::new(Code::Internal, e.to_string())
-            })?;
+        playback_service.add_record(record).await.map_err(|e| {
+            error!("Failed to add record: {}", e);
+            Status::new(Code::Internal, e.to_string())
+        })?;
 
         Ok(Response::new(RouteResponse {
             message_id: "".to_string(),
@@ -168,9 +167,12 @@ impl RouteServiceImpl {
     }
 
     /// 处理回放模式：将消息透传到下游服务节点
-    async fn handle_playback_mode(&self, record: TrafficRecord) -> Result<Response<RouteResponse>, Status> {
+    async fn handle_playback_mode(
+        &self,
+        record: TrafficRecord,
+    ) -> Result<Response<RouteResponse>, Status> {
         let downstream_addr = self.get_downstream_addresses()?;
-        
+
         if downstream_addr.is_empty() {
             return Err(Status::new(
                 Code::NotFound,
@@ -184,40 +186,40 @@ impl RouteServiceImpl {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             % downstream_addr.len();
         let addr = &downstream_addr[index];
-        
+
         // 获取或创建HTTP客户端
         let client = self.get_or_create_client(addr).await;
-        
+
         // 发送HTTP POST请求到下游服务
         let url = format!("http://{}/sync", addr);
-        let response = client.post(&url)
-            .json(&record)
-            .send()
-            .await
-            .map_err(|e| {
-                error!("Failed to send request to target service {}: {}", addr, e);
-                Status::new(Code::Unavailable, e.to_string())
-            })?;
+        let response = client.post(&url).json(&record).send().await.map_err(|e| {
+            error!("Failed to send request to target service {}: {}", addr, e);
+            Status::new(Code::Unavailable, e.to_string())
+        })?;
 
         // 检查HTTP响应状态
         if !response.status().is_success() {
             let status_text = response.status().to_string();
-            error!("Downstream service {} returned error status: {}", addr, status_text);
-            return Err(Status::new(Code::Unavailable, format!("Downstream error: {}", status_text)));
+            error!(
+                "Downstream service {} returned error status: {}",
+                addr, status_text
+            );
+            return Err(Status::new(
+                Code::Unavailable,
+                format!("Downstream error: {}", status_text),
+            ));
         }
 
         // 解析响应
-        let record_bytes = response.bytes().await
-            .map_err(|e| {
-                error!("Failed to read response from {}: {}", addr, e);
-                Status::new(Code::Unavailable, e.to_string())
-            })?;
+        let record_bytes = response.bytes().await.map_err(|e| {
+            error!("Failed to read response from {}: {}", addr, e);
+            Status::new(Code::Unavailable, e.to_string())
+        })?;
 
-        let record: TrafficRecord = serde_json::from_slice(&record_bytes)
-            .map_err(|e| {
-                error!("Failed to parse response from {}: {}", addr, e);
-                Status::new(Code::Unavailable, e.to_string())
-            })?;
+        let record: TrafficRecord = serde_json::from_slice(&record_bytes).map_err(|e| {
+            error!("Failed to parse response from {}: {}", addr, e);
+            Status::new(Code::Unavailable, e.to_string())
+        })?;
 
         // 返回gRPC响应
         Ok(Response::new(RouteResponse {
@@ -230,7 +232,9 @@ impl RouteServiceImpl {
 
     /// 获取下游地址列表
     fn get_downstream_addresses(&self) -> Result<Vec<String>, Status> {
-        self.options.grpc.as_ref()
+        self.options
+            .grpc
+            .as_ref()
             .map(|grpc_opts| grpc_opts.downstream.clone())
             .ok_or_else(|| {
                 Status::new(

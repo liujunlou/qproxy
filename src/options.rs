@@ -154,7 +154,10 @@ pub struct LogFormatOptions {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct RedisOptions {
-    pub url: String,
+    pub host: String,
+    pub port: Option<u16>,
+    pub password: Option<String>,
+    pub username: Option<String>,
     pub pool_size: Option<u32>,
     pub connection_timeout: Option<u64>,
     pub retry_count: Option<u32>,
@@ -204,7 +207,10 @@ impl Default for Options {
                 peer: None,
             },
             redis: RedisOptions {
-                url: "redis://localhost:6379".to_string(),
+                host: "localhost".to_string(),
+                port: Some(6379),
+                username: None,
+                password: None,
                 pool_size: None,
                 connection_timeout: None,
                 retry_count: None,
