@@ -28,7 +28,7 @@
         "host": "localhost",
         "port": 6379,
         "username": "default",
-        "password": "Kx@34#fKN2vuA7Ym",
+        "password": "mr.xi9999",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3

@@ -10,6 +10,7 @@ use std::time::Instant;
 use tokio::sync::RwLock;
 use tonic::transport::Server;
 use tonic::{Code, Request, Response, Status};
+use tonic_reflection::server::Builder as ReflectionBuilder;
 use tracing::{error, info};
 
 use crate::errors::Error;
@@ -41,10 +42,22 @@ pub async fn start_server(opts: Arc<Options>) -> Result<(), Error> {
 
     info!("gRPC server starting on {}", addr);
 
-    // 创建 gRPC 服务器，添加超时和连接限制
+    // 通过反射开启通用 invoke 能力（支持 grpcurl 等动态调用）
+    let reflection_service = {
+        // 由 build.rs 生成的描述符文件名
+        static DESCRIPTOR_BYTES: &[u8] =
+            include_bytes!(concat!(env!("OUT_DIR"), "/route_descriptor.bin"));
+        ReflectionBuilder::configure()
+            .register_encoded_file_descriptor_set(DESCRIPTOR_BYTES)
+            .build()
+            .expect("build reflection service")
+    };
+
+    // 创建 gRPC 服务器，添加超时和连接限制，并注册反射服务
     let server = Server::builder()
         .timeout(std::time::Duration::from_secs(30))
         .concurrency_limit_per_connection(1024)
+        .add_service(reflection_service)
         .add_service(RouteServiceServer::new(route_service));
 
     // 获取关闭信号接收器
