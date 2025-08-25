@@ -14,7 +14,7 @@ message RouteMessage {
     optional string log_id = 5;
     optional bool from_gateway = 6;
     optional bytes payload = 7;
-    optional map<string, string> metadata = 8;
+    repeated MetadataEntry metadata = 8;
 }
 
 message RouteResponse {
@@ -22,4 +22,9 @@ message RouteResponse {
     optional int32 status_code = 2;
     optional string status_message = 3;
     optional bytes payload = 4;
-} 
+}
+
+message MetadataEntry {
+    optional string key = 1;
+    optional string value = 2;
+}
