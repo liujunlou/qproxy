@@ -68,10 +68,10 @@ impl GrpcClient {
             Err(status) => {
                 if status.code() == Code::Ok {
                     Ok(Response::new(RouteResponse {
-                        message_id: "".to_string(),
-                        status_code: 200,
-                        status_message: "OK".to_string(),
-                        payload: vec![],
+                        message_id: None,
+                        status_code: Some(200),
+                        status_message: Some("OK".to_string()),
+                        payload: None,
                     }))
                 } else {
                     Err(Error::GrpcStatus(status.message().to_string()))

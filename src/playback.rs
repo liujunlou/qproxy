@@ -617,18 +617,24 @@ impl PlaybackService {
                                 // 通过grpc回放流量，并返回响应
                                 match client.call(request).await {
                                     Ok(response) => {
-                                        if response.get_ref().status_code == 200 {
-                                            return Response::new(Full::new(Bytes::from(
-                                                response.get_ref().payload.clone(),
-                                            )));
-                                        } else {
-                                            return Response::builder()
-                                                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                                                .body(Full::new(Bytes::from(
-                                                    "Failed to send GRPC request",
-                                                )))
-                                                .unwrap();
+                                        if let Some(code) = response.get_ref().status_code {
+                                            if code == 200 {
+                                                let payload = response
+                                                    .get_ref()
+                                                    .payload
+                                                    .clone()
+                                                    .unwrap_or(Vec::new());
+                                                return Response::new(Full::new(Bytes::from(
+                                                    payload,
+                                                )));
+                                            }
                                         }
+                                        return Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(Full::new(Bytes::from(
+                                                "Failed to send GRPC request",
+                                            )))
+                                            .unwrap();
                                     }
                                     Err(e) => {
                                         warn!("Failed to send GRPC request: {}", e);
@@ -897,7 +903,7 @@ impl PlaybackService {
                                 })?;
                             let request = tonic::Request::new(route_message);
                             let response = client.call(request).await?;
-                            return Ok(response.get_ref().payload.clone());
+                            return Ok(response.get_ref().payload.clone().unwrap_or(Vec::new()));
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
                             let scheme = if record.protocol == Protocol::HTTPS {
