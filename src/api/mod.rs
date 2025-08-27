@@ -18,6 +18,7 @@ pub mod metrics;
 pub mod offset_commit;
 pub mod playback;
 pub mod sync;
+pub mod record;
 
 /// 处理 API 请求
 pub async fn handle_api_request<B>(
@@ -33,6 +34,7 @@ where
     match (method, path) {
         ("GET", "/health") => health::handle_health_check(req).await,
         ("GET", "/metrics") => metrics::handle_metrics(req).await,
+        ("POST", "/record") => record::handle_record_request(req).await,
         ("GET", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/playback") => playback::handle_playback_request(req).await,

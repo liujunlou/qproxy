@@ -105,7 +105,7 @@ QProxy 是一个支持跨可用区部署的代理服务，主要用于流量录�
 ### Playback 节点配置示例：
 ```json
 {
-    "mode": "Forward", // 警务网，互联网配置
+    "mode": "Playback", // 警务网，互联网配置
     "http": {
         "host": "127.0.0.1",
         "port": 8080,

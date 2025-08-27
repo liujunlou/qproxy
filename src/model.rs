@@ -26,6 +26,7 @@ pub enum Protocol {
 pub struct RequestData {
     pub method: Option<String>,       // HTTP/HTTPS only
     pub service_name: Option<String>, // 请求的服务名
+    pub path: Option<String>,         // uri path
     pub params: Option<Vec<(String, String)>>,
     pub headers: Option<Vec<(String, String)>>, // HTTP/HTTPS only
     pub body: Vec<u8>,
@@ -42,6 +43,7 @@ impl TrafficRecord {
     pub fn new_http(
         method: String,
         service_name: String,
+        path: Option<String>,
         params: Option<Vec<(String, String)>>,
         request_headers: Vec<(String, String)>,
         request_body: Vec<u8>,
@@ -61,13 +63,14 @@ impl TrafficRecord {
             request: RequestData {
                 method: Some(method),
                 service_name: Some(service_name.clone()),
-                params: params,
-                headers: Some(request_headers),
+                path: path.clone(),
+                params: params.clone(),
+                headers: Some(request_headers.clone()),
                 body: request_body,
             },
             response: ResponseData {
                 status: Some(status),
-                headers: Some(response_headers),
+                headers: Some(response_headers.clone()),
                 body: response_body,
             },
         }
@@ -87,6 +90,7 @@ impl TrafficRecord {
             request: RequestData {
                 method: None,
                 service_name: Some(service_name.to_string()),
+                path: None,
                 params: None,
                 headers: None,
                 body: request_data,
@@ -112,6 +116,7 @@ impl TrafficRecord {
             request: RequestData {
                 method: None,
                 service_name: Some(service_name.to_string()),
+                path: None,
                 params: None,
                 headers: None,
                 body: request_data,
