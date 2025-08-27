@@ -34,7 +34,7 @@ where
     match (method, path) {
         ("GET", "/health") => health::handle_health_check(req).await,
         ("GET", "/metrics") => metrics::handle_metrics(req).await,
-        ("POST", "/record") => record::handle_record_request(req).await,
+        ("POST", "/record") => record::handle_record_request(req, options).await,
         ("GET", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/sync") => sync::handle_sync_request(req, options).await,
         ("POST", "/playback") => playback::handle_playback_request(req).await,
