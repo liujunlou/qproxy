@@ -1,12 +1,12 @@
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tracing::{error, info};
 
 use crate::{errors::Error, model::{self}, options::{Options, ProxyMode}, playback::PlaybackService, PLAYBACK_SERVICE};
@@ -16,9 +16,12 @@ pub struct Record {
     pub method: String,
     pub service_name: String,
     pub path: Option<String>,
+    #[serde(default)] // 如果没有提供，使用默认值
     pub params: Option<Vec<(String, String)>>,
+    #[serde(default)] // 如果没有提供，使用默认值
     pub request_headers: Vec<(String, String)>,
-    pub request_body: Vec<u8>,
+    #[serde(rename = "request_body")]
+    pub request_body: Option<HashMap<String, Value>>,
 }
 
 pub async fn handle_record_request<B>(
@@ -39,13 +42,14 @@ where
 
     info!("Adding sync record: {:?}", record);
 
+    let data = serde_json::to_vec(&record.request_body)?;
     let record = model::TrafficRecord::new_http(
         record.method,
         record.service_name,
         record.path,
         record.params,
         record.request_headers,
-        record.request_body,
+        data,
         200,
         Vec::new(),
         Vec::new(),
