@@ -80,6 +80,7 @@ async fn test_sync_from_peer() {
         request: RequestData {
             method: Some("GET".to_string()),
             service_name: Some("/api/test".to_string()),
+            path: None,
             params: Some(vec![]),
             headers: Some(vec![(
                 "Content-Type".to_string(),

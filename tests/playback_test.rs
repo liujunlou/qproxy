@@ -28,6 +28,7 @@ async fn test_add_and_get_record() {
         request: RequestData {
             method: Some("GET".to_string()),
             service_name: Some("/api/test".to_string()),
+            path: None,
             params: Some(vec![("key".to_string(), "value".to_string())]),
             headers: Some(vec![(
                 "Content-Type".to_string(),
@@ -81,6 +82,7 @@ async fn test_trigger_replay() {
         request: RequestData {
             method: Some("GET".to_string()),
             service_name: Some("test-service".to_string()),
+            path: None,
             params: Some(vec![]),
             headers: Some(vec![(
                 "Content-Type".to_string(),
@@ -148,6 +150,7 @@ async fn test_local_records_management() {
         request: RequestData {
             method: Some("GET".to_string()),
             service_name: Some("/api/test".to_string()),
+            path: None,
             params: Some(vec![]),
             headers: Some(vec![(
                 "Content-Type".to_string(),

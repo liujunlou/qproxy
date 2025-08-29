@@ -68,7 +68,16 @@ where
                         .map_err(|e| Error::Http1(e.to_string()))?)
                 }
                 ProxyMode::Playback => {
-                    let response = forward_http_traffic(record, playback_service).await?;
+                    let response = match forward_http_traffic(record, playback_service).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            error!("Failed to forward HTTP traffic: {:?}", e);
+                            return Ok(Response::builder()
+                                .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                .body(Full::new(Bytes::from("Failed to forward HTTP traffic")))
+                                .map_err(|e| Error::Http1(e.to_string()))?)
+                        }
+                    };
                     Ok(Response::builder()
                         .status(StatusCode::OK)
                         .body(Full::new(Bytes::from(response)))

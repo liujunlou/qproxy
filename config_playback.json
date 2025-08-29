@@ -32,7 +32,10 @@
         }
     },
     "redis": {
-        "url": "redis://default:mr.xi9999@localhost:6379",
+        "host": "localhost",
+        "port": 6379,
+        "username": "default",
+        "password": "mr.xi9999",
         "pool_size": 10,
         "connection_timeout": 5,
         "retry_count": 3
@@ -73,11 +76,11 @@
     "logging": {
         "level": "info",
         "directory": "logs",
-        "file_name_pattern": "qproxy_",
+        "file_name_pattern": "qproxy",
         "rotation": {
             "max_size_mb": 100,
             "max_files": 10,
-            "compress": true
+            "compress": false
         },
         "format": {
             "timestamp": true,
