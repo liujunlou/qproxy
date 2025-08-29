@@ -411,7 +411,8 @@ impl PlaybackService {
     /// # 参数
     /// * `record` - 要添加的流量记录
     pub async fn add_record(&self, record: TrafficRecord) -> Result<(), Error> {
-        let key = self.get_traffic_key(&record.peer_id, "default");
+        // 暂时不做录制记录区分，来保证数据在一个队列上
+        let key = self.get_traffic_key("default", "default");
         let json = serde_json::to_string(&record)?;
         let score = record.timestamp as u64;
 

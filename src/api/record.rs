@@ -37,10 +37,13 @@ where
         .await
         .map_err(|_| Error::Http1("Failed to record request body".to_string()))?
         .to_bytes();
-    let record: Record = serde_json::from_slice(&body)
+    let mut record: Record = serde_json::from_slice(&body)
         .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
 
     info!("Adding sync record: {:?}", record);
+
+    // 在请求头上加上mode: playback来区分回放流量
+    record.request_headers.push(("mode".to_string(), "playback".to_string()));
 
     let data = serde_json::to_vec(&record.request_body)?;
     let record = model::TrafficRecord::new_http(
