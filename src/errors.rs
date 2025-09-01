@@ -12,6 +12,9 @@ pub enum Error {
     #[error("Proxy error: {0}")]
     Proxy(String),
 
+    #[error("Playback error: {0}")]
+    Playback(String),
+
     #[error("Service error: {0}")]
     ServiceError(String),
 

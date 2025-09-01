@@ -18,7 +18,7 @@ use prost::Message;
 use redis::{aio::ConnectionManager, AsyncCommands};
 use route::RouteMessage;
 use serde::{Deserialize, Serialize};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, sync::Arc};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -337,23 +337,25 @@ impl PlaybackService {
             cp
         };
 
-        let since = UNIX_EPOCH + Duration::from_millis(cp.last_sync_time as u64);
+        info!("Get records for sync, peer_id: {}, shard_id: {}, last_sync_time: {}", peer_id, shard_id, cp.last_sync_time);
         let key = self.get_traffic_key(peer_id, shard_id);
+        // 从checkpoint的 last_sync_time 开始同步，记录的 last_sync_time 转时间
+        let since = cp.last_sync_time as u64;
+        let mut min_score = cp.last_sync_time as u64;
+        let mut step = 300 * 1000;
 
-        let mut conn = self.redis_pool.as_ref().clone();
-        let mut min_score = since.duration_since(UNIX_EPOCH)?.as_millis() as u64;
-        let mut max_score = (since + Duration::from_secs(300))
-            .duration_since(UNIX_EPOCH)?
-            .as_millis() as u64;
+        let now = Instant::now();
 
-        let start_time = SystemTime::now();
         let mut records: Vec<String> = Vec::new();
+        let end_time = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         let max_records = 1000;
         let max_duration = Duration::from_secs(5);
 
+        let mut max_score = since + step;
+        let mut conn = self.redis_pool.as_ref().clone();
         loop {
+            info!("Get records from redis, key: {}, min_score: {}, max_score: {}, {}", key, min_score, max_score, max_records);
             // 获取指定范围内的记录，并限制数量，避免数据量太大
-            info!("Get records from redis, key: {}, min_score: {}, max_score: {}, 0, {}", key, min_score, max_score, max_records);
             match conn
                 .zrangebyscore_limit::<_, _, _, Vec<String>>(
                     &key,
@@ -379,7 +381,7 @@ impl PlaybackService {
             }
 
             // 检查是否超时
-            if start_time.elapsed().unwrap_or(Duration::from_secs(0)) >= max_duration {
+            if now.elapsed() >= max_duration {
                 info!("Sync operation timed out after {:?}", max_duration);
                 break;
             }
@@ -393,14 +395,14 @@ impl PlaybackService {
 
             // 更新min_score和max_score，获取下一步长的回放记录
             min_score = max_score;
-            max_score += 300;
+            max_score += step;
         }
 
         info!("Get record size {}", records.clone().len());
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
-                if record.timestamp >= since.duration_since(UNIX_EPOCH)?.as_millis() as u128
+                if record.timestamp >= since as u128
                     && record.id != cp.last_record_id
                 {
                     result.push(record);
@@ -443,9 +445,11 @@ impl PlaybackService {
         self.records
             .write()
             .await
-            .entry(key)
+            .entry(key.clone())
             .or_insert(Vec::new())
             .push(record);
+        let tx = self.notify_tx.blocking_lock();
+        tx.send(key).await.map_err(|e| Error::Playback(e.to_string()))?;
         Ok(())
     }
 
