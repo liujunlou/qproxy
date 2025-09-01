@@ -440,16 +440,18 @@ impl PlaybackService {
         Ok(())
     }
 
-    pub async fn add_local_record(&self, record: TrafficRecord) -> Result<(), Error> {
+    pub async fn add_local_record(&self, record: &TrafficRecord) -> Result<(), Error> {
+        // 将records 根据 peer_id 进行分流，来分别推入不同的 self.records key中
+        let tx_key = record.peer_id.clone();
         let key = self.get_traffic_key(&record.peer_id, "default");
         self.records
             .write()
             .await
             .entry(key.clone())
             .or_insert(Vec::new())
-            .push(record);
-        let tx = self.notify_tx.blocking_lock();
-        tx.send(key).await.map_err(|e| Error::Playback(e.to_string()))?;
+            .push(record.clone());
+        let tx = self.notify_tx.lock().await;
+        tx.send(tx_key).await.map_err(|e| Error::Playback(e.to_string()))?;
         Ok(())
     }
 

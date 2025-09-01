@@ -56,6 +56,7 @@ impl SyncService {
                     break;
                 }
 
+                info!("Sync record of timer");
                 if let Err(e) = Self::sync_with_peers(&options, &client).await {
                     error!("Sync error: {}", e);
                 }
@@ -140,7 +141,7 @@ impl SyncService {
         info!("Syncing traffic records from peer: {} records", records.clone().len());
         
         for record in records {
-            playback_service.add_local_record(record.clone()).await?;
+            playback_service.add_local_record(&record).await?;
         }
 
         info!("Successfully synced and replayed traffic records from peer");

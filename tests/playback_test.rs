@@ -169,7 +169,7 @@ async fn test_local_records_management() {
     };
 
     // 添加本地记录
-    assert!(service.add_local_record(record.clone()).await.is_ok());
+    assert!(service.add_local_record(&record).await.is_ok());
 
     // 清理本地记录
     assert!(service.clear_local_records(record.clone()).await.is_ok());
