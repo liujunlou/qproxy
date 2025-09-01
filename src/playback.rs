@@ -348,6 +348,7 @@ impl PlaybackService {
 
         loop {
             // 获取指定范围内的记录，并限制数量，避免数据量太大
+            info!("Get records from redis, key: {}, min_score: {}, max_score: {}, 0, {}", key, min_score, max_score, max_records);
             match conn
                 .zrangebyscore_limit::<_, _, _, Vec<String>>(
                     &key,
@@ -417,6 +418,7 @@ impl PlaybackService {
         let score = record.timestamp as u64;
 
         let mut conn = self.redis_pool.as_ref().clone();
+        info!("Add record to redis, key: {}, score: {}, json: {}", key, score, json);
         conn.zadd(&key, &json, score).await?;
         Ok(())
     }
