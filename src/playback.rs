@@ -450,6 +450,7 @@ impl PlaybackService {
             .entry(key.clone())
             .or_insert(Vec::new())
             .push(record.clone());
+        info!("Add local record, peer_id: {}, record: {:?}", record.peer_id, record);
         let tx = self.notify_tx.lock().await;
         tx.send(tx_key).await.map_err(|e| Error::Playback(e.to_string()))?;
         Ok(())
