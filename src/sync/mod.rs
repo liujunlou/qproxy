@@ -137,6 +137,8 @@ impl SyncService {
             .await
             .map_err(|e| Error::Proxy(format!("Failed to parse peer response: {}", e)))?;
 
+        info!("Syncing traffic records from peer: {} records", records.clone().len());
+        
         for record in records {
             playback_service.add_local_record(record.clone()).await?;
         }

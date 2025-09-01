@@ -52,10 +52,11 @@ pub struct CheckpointInfo {
 
 impl CheckpointInfo {
     pub fn new(peer_id: &str, shard_id: &str) -> Result<Self, Error> {
+
         Ok(Self {
             peer_id: peer_id.to_string(),
             shard_id: shard_id.to_string(),
-            last_sync_time: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
+            last_sync_time: Self::get_start_timestamp()?,
             last_record_id: String::new(),
             status: SyncStatus::Pending,
             retry_count: 0,
@@ -77,6 +78,10 @@ impl CheckpointInfo {
             retry_count: 0,
             error_message: None,
         })
+    }
+    fn get_start_timestamp() -> Result<u128, Error> {
+        let start = SystemTime::now() - Duration::from_secs(60*5);
+        Ok(start.duration_since(UNIX_EPOCH)?.as_millis())
     }
 }
 
@@ -225,7 +230,7 @@ impl PlaybackService {
             Some(j) => {
                 match serde_json::from_str::<CheckpointInfo>(&j) {
                     Ok(checkpoint) => {
-                        if checkpoint.status == SyncStatus::Pending {
+                        if checkpoint.status == SyncStatus::Pending || checkpoint.status == SyncStatus::Completed {
                             Ok(Some(checkpoint))
                         } else {
                             // 如果同步状态为InProgress，说明有节点正在同步数据，则跳过
@@ -391,6 +396,7 @@ impl PlaybackService {
             max_score += 300;
         }
 
+        info!("Get record size {}", records.clone().len());
         let mut result = Vec::new();
         for json in records {
             if let Ok(record) = serde_json::from_str::<TrafficRecord>(&json) {
@@ -402,6 +408,7 @@ impl PlaybackService {
             }
         }
 
+        info!("Convert to result size {}", result.clone().len());
         // 按时间戳排序
         result.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
         Ok(result)
