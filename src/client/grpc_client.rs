@@ -54,7 +54,10 @@ impl GrpcClient {
     pub async fn new(addr: &str) -> Result<Self, Error> {
         let route_service_client = match RouteServiceClient::connect(addr.to_string()).await {
             Ok(client) => client,
-            Err(e) => return Err(Error::Grpc(e)),
+            Err(e) => {
+                error!("Create grpc client failed, addr: {}, error: {:?}", addr, e);
+                return Err(Error::Grpc(e));
+            }
         };
         info!("Create grpc client, addr: {}", addr);
         Ok(Self {
