@@ -911,7 +911,13 @@ impl PlaybackService {
                         Protocol::GRPC => {
                             info!("Triggering traffic replay to local grpc service: {} ,record: {:?}", addr, record.clone());
                             // 这里完成 MQTT connect和流量回放，复用连接
-                            let mut client = get_grpc_client(&addr).await?;
+                            let mut client = match get_grpc_client(&addr).await {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    error!("Get grpc client failed: {}", e);
+                                    return Err(e);
+                                }
+                            };
                             let route_message = RouteMessage::decode(&mut &record.request.body[..])
                                 .map_err(|_| {
                                     Error::GrpcStatus(format!(
