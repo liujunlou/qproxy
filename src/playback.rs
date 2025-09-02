@@ -909,6 +909,7 @@ impl PlaybackService {
                             }
                         }
                         Protocol::GRPC => {
+                            info!("Triggering traffic replay to local grpc service: {} ,record: {:?}", addr, record.clone());
                             // 这里完成 MQTT connect和流量回放，复用连接
                             let mut client = get_grpc_client(&addr).await?;
                             let route_message = RouteMessage::decode(&mut &record.request.body[..])
@@ -923,6 +924,7 @@ impl PlaybackService {
                             return Ok(response.get_ref().payload.clone().unwrap_or(Vec::new()));
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
+                            info!("Triggering traffic replay to local http service: {} ,record: {:?}", addr, record.clone());
                             let scheme = if record.protocol == Protocol::HTTPS {
                                 "https"
                             } else {
@@ -944,6 +946,7 @@ impl PlaybackService {
                                         .join("&"))
                                     .unwrap_or("".to_string())
                             );
+                            info!("Request local url: {}", local_url.clone());
 
                             let local_req = Request::builder()
                                 .method(
