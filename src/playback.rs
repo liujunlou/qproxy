@@ -920,7 +920,14 @@ impl PlaybackService {
                                     ))
                                 })?;
                             let request = tonic::Request::new(route_message);
-                            let response = client.call(request).await?;
+                            info!("Request grpc service: {:?}", request);
+                            let response = match client.call(request).await {
+                                Ok(resp) => resp,
+                                Err(e) => {
+                                    error!("Failed to call grpc service: {:?}", e);
+                                    return Err(Error::GrpcStatus(e.to_string()));
+                                }
+                            };
                             return Ok(response.get_ref().payload.clone().unwrap_or(Vec::new()));
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
