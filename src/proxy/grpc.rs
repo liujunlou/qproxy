@@ -225,15 +225,15 @@ impl RouteServiceImpl {
         }
 
         // 解析响应
-        let record_bytes = response.bytes().await.map_err(|e| {
-            error!("Failed to read response from {}: {}", addr, e);
-            Status::new(Code::Unavailable, e.to_string())
-        })?;
+        // let record_bytes = response.bytes().await.map_err(|e| {
+        //     error!("Failed to read response from {}: {}", addr, e);
+        //     Status::new(Code::Unavailable, e.to_string())
+        // })?;
 
-        let record: TrafficRecord = serde_json::from_slice(&record_bytes).map_err(|e| {
-            error!("Failed to parse response from {}: {}", addr, e);
-            Status::new(Code::Unavailable, e.to_string())
-        })?;
+        // let record: TrafficRecord = serde_json::from_slice(&record_bytes).map_err(|e| {
+        //     error!("Failed to parse response from {}: {}", addr, e);
+        //     Status::new(Code::Unavailable, e.to_string())
+        // })?;
 
         // 返回gRPC响应
         Ok(Response::new(RouteResponse {
