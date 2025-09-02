@@ -188,8 +188,11 @@ impl PlaybackService {
             .query_async(&mut self.redis_pool.as_ref().clone())
             .await?;
 
+        
         let mut new_checkpoint = checkpoint.clone();
         if let Some(old) = old {
+            info!("Get offset {} by {}", old, key);
+
             let old_checkpoint: CheckpointInfo = serde_json::from_str(&old)?;
             if old_checkpoint.last_sync_time < checkpoint.last_sync_time {
                 new_checkpoint.last_sync_time = old_checkpoint.last_sync_time;
@@ -204,6 +207,8 @@ impl PlaybackService {
         };
 
         let json = serde_json::to_string(&new_checkpoint).unwrap();
+        info!("Update offset {} by {}", json, key);
+
         let mut conn = self.redis_pool.as_ref().clone();
         conn.set(&key, json).await?;
         Ok(())
@@ -1096,6 +1101,7 @@ impl PlaybackService {
         let mut last_offset = 0;
         let mut last_record_id = String::new();
         let mut failed_records = Vec::new();
+        info!("Starting replay records {}", records_to_replay.len());
         for record in &records_to_replay {
             info!("Replaying traffic record: {}", record.id);
             if let Err(e) = self.trigger_replay(record).await {
@@ -1107,9 +1113,11 @@ impl PlaybackService {
             if record.timestamp > last_offset {
                 last_offset = record.timestamp.clone();
                 last_record_id = record.id.clone();
+                info!("Update offset {} record_id {}", last_offset.clone(), last_record_id.clone());
             }
         }
 
+        info!("Lastly offset {} record_id {}", last_offset.clone(), last_record_id.clone());
         // 3. 清理已成功回放的记录
         if !records_to_replay.is_empty() {
             let mut records_guard = self.records.write().await;
@@ -1117,6 +1125,10 @@ impl PlaybackService {
                 records.retain(|r| !failed_records.contains(&r.id));
             }
         }
+
+        let remaining = self.records.read().await;
+        info!("End remaining records {}", remaining.len());
+        
         // 4. 返回已回放的offset
         let offset = Offset::new(
             peer_id.to_string(),

@@ -9,7 +9,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use hyper::Request;
 use serde_json::json;
-use tracing::error;
+use tracing::{error, info};
 
 /// 处理offset commit请求
 pub async fn handle_offset_commit_request<B>(
@@ -33,6 +33,7 @@ where
             let offset: Offset = serde_json::from_slice(&body)
                 .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
 
+            info!("Receive offset commit {:?}", offset.clone());
             // 更新offset
             if let Err(e) = update_offset(offset.clone()).await {
                 error!(
