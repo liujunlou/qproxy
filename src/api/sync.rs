@@ -8,7 +8,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
 use serde_json::json;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
 
 /// 处理同步请求
 pub async fn handle_sync_request<B>(
@@ -93,10 +93,19 @@ where
             // 返回透传的真实响应数据
             let playback_service = PLAYBACK_SERVICE.read().await;
             let response = if let Some(playback_service) = playback_service.as_ref() {
-                playback_service
+                match playback_service
                     .sync_from_peer(record.clone())
                     .await
-                    .map_err(|e| Error::Proxy(format!("Failed to sync from peer: {}", e)))?
+                    .map_err(|e| {
+                        error!("Failed to sync from peer: {}", e);
+                        Error::Proxy(format!("Failed to sync from peer: {}", e))
+                    }) {
+                        Ok(resp) => resp,
+                        Err(e) => {
+                            error!("Failed to sync from peer: {}", e);
+                            return Err(e);
+                        }
+                    }
             } else {
                 return Err(Error::Proxy("Playback service not initialized".to_string()));
             };
