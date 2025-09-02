@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use once_cell::sync::Lazy;
 use tokio::sync::RwLock;
+use tracing::error;
+use tracing::info;
 // use route::route_service_client::RouteServiceClient;
 // use route::RouteMessage;
 // use route::RouteResponse;
@@ -54,6 +56,7 @@ impl GrpcClient {
             Ok(client) => client,
             Err(e) => return Err(Error::Grpc(e)),
         };
+        info!("Create grpc client, addr: {}", addr);
         Ok(Self {
             client: route_service_client,
         })
@@ -63,6 +66,7 @@ impl GrpcClient {
         &mut self,
         request: Request<RouteMessage>,
     ) -> Result<Response<RouteResponse>, Error> {
+        info!("Call grpc client, request: {:?}", request);
         match self.client.send_message(request).await {
             Ok(response) => Ok(response),
             Err(status) => {
@@ -74,6 +78,7 @@ impl GrpcClient {
                         payload: None,
                     }))
                 } else {
+                    error!("Call grpc client failed, status: {:?}", status);
                     Err(Error::GrpcStatus(status.message().to_string()))
                 }
             }
