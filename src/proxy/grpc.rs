@@ -211,6 +211,7 @@ impl RouteServiceImpl {
         })?;
 
         // 检查HTTP响应状态
+        info!("Response {:?}", response);
         if !response.status().is_success() {
             let status_text = response.status().to_string();
             error!(

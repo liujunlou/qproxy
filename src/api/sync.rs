@@ -114,6 +114,7 @@ where
                 Error::Proxy(format!("Failed to convert response to string: {}", e))
             })?;
 
+            info!("Sync post response: {}", response_str);
             return Ok(Response::builder()
                 .status(http::StatusCode::OK)
                 .header("Content-Type", "application/json")

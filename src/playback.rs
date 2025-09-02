@@ -182,6 +182,7 @@ impl PlaybackService {
 
     /// 更新同步位点
     pub async fn update_checkpoint(&self, checkpoint: &CheckpointInfo) -> Result<(), Error> {
+        // 因为现在所有的录制数据都在default节点，所以这里直接用default节点的key
         let key = self.get_checkpoint_key("default", "default");
         // let key = self.get_checkpoint_key(&checkpoint.peer_id, &checkpoint.shard_id);
         let old: Option<String> = redis::cmd("GET")
@@ -940,6 +941,7 @@ impl PlaybackService {
                                     return Err(Error::GrpcStatus(e.to_string()));
                                 }
                             };
+                            info!("Get grpc response: {:?}", response);
                             return Ok(response.get_ref().payload.clone().unwrap_or(Vec::new()));
                         }
                         Protocol::HTTP | Protocol::HTTPS => {
