@@ -88,7 +88,7 @@ where
             let record: TrafficRecord = serde_json::from_slice(&body)
                 .map_err(|e| Error::Proxy(format!("Failed to parse records: {}", e)))?;
 
-            info!("Adding sync record: {}", record.id);
+            info!("Receive forward record: {}", record.id);
 
             // 返回透传的真实响应数据
             let playback_service = PLAYBACK_SERVICE.read().await;

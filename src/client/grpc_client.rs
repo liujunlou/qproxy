@@ -72,7 +72,15 @@ impl GrpcClient {
     ) -> Result<Response<RouteResponse>, Error> {
         info!("Call grpc client, request: {:?}", request);
         match self.client.send_message(request).await {
-            Ok(response) => Ok(response),
+            Ok(response) => {
+                // 获取response中的RouteResponse的status_code
+                let status_code = response.get_ref().status_code.unwrap_or(400);
+                if status_code != 200 {
+                    error!("Call grpc client failed, status_code: {}", status_code);
+                    return Err(Error::GrpcStatus(status_code.to_string()));
+                }
+                Ok(response)
+            },
             Err(status) => {
                 if status.code() == Code::Ok {
                     Ok(Response::new(RouteResponse {

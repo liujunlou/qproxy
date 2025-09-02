@@ -146,7 +146,7 @@ impl RouteServiceImpl {
 
         // 将RouteMessage整个消息拼接封装grpc请求
         let payload = message.encode_to_vec();
-        let record = TrafficRecord::new_grpc("CMP", payload, vec![]);
+        let record = TrafficRecord::new_grpc("default", payload, vec![]);
 
         // 根据当前节点的ProxyMode处理消息
         match self.options.mode {

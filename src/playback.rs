@@ -182,7 +182,8 @@ impl PlaybackService {
 
     /// 更新同步位点
     pub async fn update_checkpoint(&self, checkpoint: &CheckpointInfo) -> Result<(), Error> {
-        let key = self.get_checkpoint_key(&checkpoint.peer_id, &checkpoint.shard_id);
+        let key = self.get_checkpoint_key("default", "default");
+        // let key = self.get_checkpoint_key(&checkpoint.peer_id, &checkpoint.shard_id);
         let old: Option<String> = redis::cmd("GET")
             .arg(&key)
             .query_async(&mut self.redis_pool.as_ref().clone())
@@ -1057,8 +1058,10 @@ impl PlaybackService {
                         }
                     };
                     // 更新offset
-                    if let Err(e) = update_offset(&sync, offset).await {
-                        error!("Failed to update offset for peer: {}", peer_id);
+                    if let Some(offset) = offset {
+                        if let Err(e) = update_offset(&sync, offset).await {
+                            error!("Failed to update offset for peer {}: {}", peer_id, e);
+                        }
                     }
                     // 重置回退时间
                     backoff = Duration::from_secs(1);
@@ -1074,8 +1077,10 @@ impl PlaybackService {
                         }
                     };
                     // 更新offset
-                    if let Err(e) = update_offset(&sync, offset).await {
-                        error!("Failed to update offset for peer: {}", "default");
+                    if let Some(offset) = offset {
+                        if let Err(e) = update_offset(&sync, offset).await {
+                            error!("Failed to update offset for peer {}: {}", "default", e);
+                        }
                     }
                     // 指数回退，但不超过最大回退时间
                     backoff = std::cmp::min(backoff * 2, max_backoff);
@@ -1085,7 +1090,7 @@ impl PlaybackService {
     }
 
     /// 回放待处理的流量
-    async fn replay_pending_traffic(&self, peer_id: &str, shard_id: &str) -> Result<Offset, Error> {
+    async fn replay_pending_traffic(&self, peer_id: &str, shard_id: &str) -> Result<Option<Offset>, Error> {
         let key = self.get_traffic_key(peer_id, shard_id);
 
         // 1. 先获取所有需要回放的记录
@@ -1096,12 +1101,16 @@ impl PlaybackService {
                 .map(|records| records.clone())
                 .unwrap_or_default()
         };
+        let size = records_to_replay.len();
+        info!("Starting replay records {}", size);
+        if size == 0 {
+            return Ok(None)
+        }
 
         // 2. 回放流量
         let mut last_offset = 0;
         let mut last_record_id = String::new();
         let mut failed_records = Vec::new();
-        info!("Starting replay records {}", records_to_replay.len());
         for record in &records_to_replay {
             info!("Replaying traffic record: {}", record.id);
             if let Err(e) = self.trigger_replay(record).await {
@@ -1136,7 +1145,7 @@ impl PlaybackService {
             last_offset,
             last_record_id,
         );
-        Ok(offset)
+        Ok(Some(offset))
     }
 }
 
