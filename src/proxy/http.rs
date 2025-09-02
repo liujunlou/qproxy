@@ -46,6 +46,7 @@ pub async fn start_server(options: Arc<Options>) -> Result<(), Error> {
                                         let options = options.clone();
                                         async move {
                                             let start_time = Instant::now();
+                                            info!("Received request: {:?}", req);
                                             let result = api::handle_api_request(req, options).await;
 
                                             // 记录请求完成
