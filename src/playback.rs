@@ -885,7 +885,7 @@ impl PlaybackService {
                 Ok(Some(service)) => {
                     // 构建本地服务连接地址
                     let addr = format!("{}:{}", service.host, service.port);
-                    info!("Triggering traffic replay to local service: {}", addr);
+                    info!("Triggering traffic replay to local service: {} ,record: {:?}", addr, record.clone());
 
                     match record.protocol {
                         Protocol::TCP => {
