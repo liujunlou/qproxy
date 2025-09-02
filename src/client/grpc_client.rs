@@ -52,14 +52,15 @@ pub struct GrpcClient {
 
 impl GrpcClient {
     pub async fn new(addr: &str) -> Result<Self, Error> {
-        let route_service_client = match RouteServiceClient::connect(addr.to_string()).await {
+        let grpc_addr = format!("http://{}", addr);
+        let route_service_client = match RouteServiceClient::connect(grpc_addr.clone()).await {
             Ok(client) => client,
             Err(e) => {
-                error!("Create grpc client failed, addr: {}, error: {:?}", addr, e);
+                error!("Create grpc client failed, addr: {}, error: {:?}", grpc_addr, e);
                 return Err(Error::Grpc(e));
             }
         };
-        info!("Create grpc client, addr: {}", addr);
+        info!("Create grpc client, addr: {}", grpc_addr);
         Ok(Self {
             client: route_service_client,
         })
