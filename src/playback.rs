@@ -198,6 +198,7 @@ impl PlaybackService {
             let old_checkpoint: CheckpointInfo = serde_json::from_str(&old)?;
             // 如果旧值大于新值，则直接跳过
             if old_checkpoint.last_sync_time > checkpoint.last_sync_time {
+                info!("skip update offset");
                 return Ok(());
             }
         } else {
