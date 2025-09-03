@@ -451,7 +451,7 @@ impl PlaybackService {
     pub async fn add_local_record(&self, record: &TrafficRecord) -> Result<(), Error> {
         // 将records 根据 peer_id 进行分流，来分别推入不同的 self.records key中
         let tx_key = record.peer_id.clone();
-        let key = self.get_traffic_key(&record.peer_id, "default");
+        let key = self.get_traffic_key("default", "default");
         self.records
             .write()
             .await
@@ -1134,6 +1134,7 @@ impl PlaybackService {
         if !records_to_replay.is_empty() {
             let mut records_guard = self.records.write().await;
             if let Some(records) = records_guard.get_mut(&key) {
+                // 清理已成功的回放记录
                 records.retain(|r| !failed_records.contains(&r.id));
             }
         }
