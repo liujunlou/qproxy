@@ -190,15 +190,16 @@ impl PlaybackService {
             .query_async(&mut self.redis_pool.as_ref().clone())
             .await?;
 
-        
         let mut new_checkpoint = checkpoint.clone();
         if let Some(old) = old {
-            info!("Get offset {} by {}", old, key);
+            info!("Get old offset {} by {}", old, key);
+            info!("Get new checkpoint {:?}", checkpoint);
 
             let old_checkpoint: CheckpointInfo = serde_json::from_str(&old)?;
             if old_checkpoint.last_sync_time < checkpoint.last_sync_time {
                 new_checkpoint.last_sync_time = old_checkpoint.last_sync_time;
                 new_checkpoint.last_record_id = old_checkpoint.last_record_id.clone();
+                info!("Set sync {} {}", new_checkpoint.last_sync_time, new_checkpoint.last_record_id);
             }
         } else {
             // 如果旧的checkpoint不存在，则直接更新

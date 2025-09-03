@@ -85,6 +85,7 @@ async fn update_offset(offset: &Offset) -> Result<(), Error> {
             offset.offset,
             &offset.record_id,
         )?;
+        info!("update_offset {:?}", checkpoint);
         playback_service.update_checkpoint(&checkpoint).await?;
     }
     Ok(())
