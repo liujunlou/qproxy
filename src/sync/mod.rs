@@ -61,8 +61,7 @@ impl SyncService {
                     error!("Sync error: {}", e);
                 }
                 // 每60秒同步一次
-                info!("Sync interval: {}s", options.sync.interval);
-                tokio::time::sleep(std::time::Duration::from_secs(options.sync.interval)).await;
+                tokio::time::sleep(std::time::Duration::from_millis(options.sync.interval)).await;
             }
         })
     }
