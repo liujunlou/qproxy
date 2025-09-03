@@ -67,13 +67,13 @@ impl CheckpointInfo {
         peer_id: &str,
         shard_id: &str,
         offset: u128,
-        record_id: String,
+        record_id: &str,
     ) -> Result<Self, Error> {
         Ok(Self {
             peer_id: peer_id.to_string(),
             shard_id: shard_id.to_string(),
-            last_sync_time: SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-            last_record_id: record_id,
+            last_sync_time: offset,
+            last_record_id: record_id.to_string(),
             status: SyncStatus::Completed,
             retry_count: 0,
             error_message: None,

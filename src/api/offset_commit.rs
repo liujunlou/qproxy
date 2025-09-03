@@ -35,7 +35,7 @@ where
 
             info!("Receive offset commit {:?}", offset.clone());
             // 更新offset
-            if let Err(e) = update_offset(offset.clone()).await {
+            if let Err(e) = update_offset(&offset).await {
                 error!(
                     "Failed to update offset for peer: {} for {:?}",
                     offset.peer_id.clone(),
@@ -76,14 +76,14 @@ where
 }
 
 /// 更新offset, 即更新redis中的CheckpointInfo
-async fn update_offset(offset: Offset) -> Result<(), Error> {
+async fn update_offset(offset: &Offset) -> Result<(), Error> {
     let playback_service = PLAYBACK_SERVICE.read().await;
     if let Some(playback_service) = playback_service.as_ref() {
         let checkpoint = CheckpointInfo::new_with_offset(
             &offset.peer_id,
             &offset.shard_id,
             offset.offset,
-            offset.record_id,
+            &offset.record_id,
         )?;
         playback_service.update_checkpoint(&checkpoint).await?;
     }
