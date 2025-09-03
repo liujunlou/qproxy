@@ -2,7 +2,7 @@ use reqwest::{Client, ClientBuilder};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use crate::errors::Error;
 use crate::model::TrafficRecord;
@@ -61,6 +61,7 @@ impl SyncService {
                     error!("Sync error: {}", e);
                 }
                 // 每60秒同步一次
+                info!("Sync interval: {}s", options.sync.interval);
                 tokio::time::sleep(std::time::Duration::from_secs(options.sync.interval)).await;
             }
         })
@@ -78,40 +79,48 @@ impl SyncService {
         options: &Arc<Options>,
         client: &Arc<Client>,
     ) -> Result<(), Error> {
+        info!("Syncing traffic records from peer");
         if let Some(peer) = &options.sync.peer {
             if !options.sync.enabled {
                 return Ok(());
             }
             let peer = peer.clone();
-
             let playback_service = PLAYBACK_SERVICE.read().await;
-            // 尝试获取锁, 如果获取失败，则跳过同步
-            if !playback_service
-                .as_ref()
-                .unwrap()
-                .acquire_sync_lock("default", "default")
-                .await?
-            {
+            if let Some(playback_service) = playback_service.as_ref() {
+                // 尝试获取锁, 如果获取失败，则跳过同步
+                info!("Playback service acquired read lock");
+                match playback_service.acquire_sync_lock("default", "default").await {
+                    Ok(_) => {
+                        info!("Sync lock acquired");
+                        match Self::sync_from_peer(client, &peer, playback_service.clone()).await {
+                            Ok(_) => {
+                                info!("Successfully synced and replayed traffic records from peer");
+                            }
+                            Err(e) => {
+                                error!("Failed to sync from peer: {}", e);
+                            }
+                        }
+                        // 释放锁
+                        info!("Sync lock released");
+                        match playback_service.release_sync_lock("default", "default").await {
+                            Ok(_) => {
+                                info!("Sync lock released");
+                            }
+                            Err(e) => {
+                                error!("Failed to release sync lock: {}", e);
+                                return Err(e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("Failed to acquire sync lock: {}", e);
+                        return Err(e);
+                    }
+                }
+            } else {
+                warn!("Playback service cannot get read lock");
                 return Ok(());
             }
-
-            let result = if let Some(playback_service) = playback_service.as_ref() {
-                Self::sync_from_peer(client, &peer, playback_service.clone()).await
-            } else {
-                Ok(())
-            };
-
-            // 释放锁
-            if let Err(e) = playback_service
-                .as_ref()
-                .unwrap()
-                .release_sync_lock("default", "default")
-                .await
-            {
-                error!("Failed to release sync lock: {}", e);
-            }
-
-            return result;
         }
         Ok(())
     }
