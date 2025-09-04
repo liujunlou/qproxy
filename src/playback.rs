@@ -405,7 +405,9 @@ impl PlaybackService {
             min_score = max_score;
             max_score += step;
         }
-
+    
+        // 待优化，这里提交的最后的一个位点在redis的zrangebyscore指令是大于等于，会导致重复拉取该条记录
+        // 所以这里移除已提交的最后一条记录
         info!("Get record size {}", records.clone().len());
         let mut result = Vec::new();
         for json in records {
@@ -1140,7 +1142,14 @@ impl PlaybackService {
         }
 
         let remaining = self.records.read().await;
-        info!("End remaining records {}", remaining.len());
+        match remaining.get(&key) {
+            Some(records) => {
+                info!("End remaining records {}", records.len());
+            }
+            None => {
+                info!("End remaining no records");
+            }
+        }
         
         // 4. 返回已回放的offset
         let offset = Offset::new(
