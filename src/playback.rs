@@ -955,10 +955,11 @@ impl PlaybackService {
                                 "http"
                             };
                             let local_url = format!(
-                                "{}://{}:{}{}",
+                                "{}://{}:{}{}?{}",
                                 scheme,
                                 service.host,
                                 service.port,
+                                record.request.path.as_ref().unwrap_or(&"".to_string()),
                                 record
                                     .request
                                     .params
