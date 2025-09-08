@@ -1056,7 +1056,7 @@ impl PlaybackService {
                 // 处理新流量通知
                 Some(peer_id) = notify_rx.recv() => {
                     info!("Received new traffic notification for peer: {}", peer_id);
-                    let offset = match self.replay_pending_traffic(&peer_id, "default").await {
+                    let offset = match self.replay_pending_traffic("default", "default").await {
                         Ok(offset) => offset,
                         Err(e) => {
                             error!("Failed to replay traffic for peer {}: {}", peer_id, e);
