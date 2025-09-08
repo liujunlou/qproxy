@@ -1138,7 +1138,7 @@ impl PlaybackService {
             let mut records_guard = self.records.write().await;
             if let Some(records) = records_guard.get_mut(&key) {
                 // 清理已成功的回放记录
-                records.retain(|r| !failed_records.contains(&r.id));
+                records.retain(|r| failed_records.contains(&r.id));
             }
         }
 
