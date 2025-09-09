@@ -972,9 +972,11 @@ impl PlaybackService {
                                 if let Some((_, content_type)) = headers.iter().find(|(k, _)| k.to_lowercase() == "content-type") {
                                     if content_type.contains("application/x-www-form-urlencoded") {
                                         if let Some(params) = record.request.params.clone() {
-                                            let body = serde_urlencoded::to_string(params).map_err(|e| {
-                                                Error::ServiceError(format!("Failed to encode params: {}", e))
-                                            })?;
+                                            let body = params
+                                                .iter()
+                                                .map(|(k, v)| format!("{}={}", k, v))
+                                                .collect::<Vec<String>>()
+                                                .join("&");
                                             record.request.body = body.into_bytes();
                                         }
                                         // 在 application/x-www-form-urlencoded 中，直接将 params 置空
