@@ -1011,6 +1011,9 @@ impl PlaybackService {
                             let local_req = if let Some(headers) = &record.request.headers {
                                 let mut builder = local_req;
                                 for (name, value) in headers {
+                                    if name.eq_ignore_ascii_case("content-length") {
+                                        continue;
+                                    }
                                     builder = builder.header(name, value);
                                 }
                                 builder
