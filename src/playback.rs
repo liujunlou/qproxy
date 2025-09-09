@@ -956,9 +956,20 @@ impl PlaybackService {
                             };
 
                             // 根据回放的 http 请求的 Content-Type 来构建回放请求
-                            let params = if let Some(headers) = record.request.headers.clone() {
-                                if let Some((_, content_type)) = headers.iter().find(|(k, _)| k == "Content-Type") {
-                                    // 如果是 application/json，则忽略
+                            let mut params: String = record
+                                .request
+                                .params
+                                .as_ref()
+                                .map(|u| {
+                                    u.iter()
+                                        .map(|(k, v)| format!("{}={}", k, v))
+                                        .collect::<Vec<String>>()
+                                        .join("&")
+                                })
+                                .unwrap_or_else(|| "".to_string());
+                            
+                            if let Some(headers) = record.request.headers.clone() {
+                                if let Some((_, content_type)) = headers.iter().find(|(k, _)| k.to_lowercase() == "content-type") {
                                     if content_type.contains("application/x-www-form-urlencoded") {
                                         if let Some(params) = record.request.params.clone() {
                                             let body = serde_urlencoded::to_string(params).map_err(|e| {
@@ -966,27 +977,20 @@ impl PlaybackService {
                                             })?;
                                             record.request.body = body.into_bytes();
                                         }
+                                        // 在 application/x-www-form-urlencoded 中，直接将 params 置空
+                                        params.clear();
                                     }
-                                    ""
-                                } else {
-                                    &record.request.params.as_ref().map(|u| u
-                                        .iter()
-                                        .map(|(k, v)| format!("{}={}", k, v))
-                                        .collect::<Vec<String>>()
-                                        .join("&"))
-                                        .unwrap_or("".to_string())
                                 }
-                            } else {
-                                ""
-                            };
+                            }
 
+                            let query_suffix = if params.is_empty() { String::new() } else { format!("?{}", params) };
                             let local_url = format!(
-                                "{}://{}:{}{}?{}",
+                                "{}://{}:{}{}{}",
                                 scheme,
                                 service.host,
                                 service.port,
-                                record.request.path.as_ref().unwrap_or(&"".to_string()),
-                                params
+                                record.request.path.as_deref().unwrap_or(""),
+                                query_suffix
                             );
                             info!("Request local url: {}", local_url.clone());
 
