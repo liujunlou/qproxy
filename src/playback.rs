@@ -959,7 +959,7 @@ impl PlaybackService {
                             let params = if let Some(headers) = record.request.headers.clone() {
                                 if let Some((_, content_type)) = headers.iter().find(|(k, _)| k == "Content-Type") {
                                     // 如果是 application/json，则忽略
-                                    if content_type.contains("applicaiton/x-www-form-urlencoded") {
+                                    if content_type.contains("application/x-www-form-urlencoded") {
                                         if let Some(params) = record.request.params.clone() {
                                             let body = serde_urlencoded::to_string(params).map_err(|e| {
                                                 Error::ServiceError(format!("Failed to encode params: {}", e))
