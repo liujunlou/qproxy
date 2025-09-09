@@ -73,7 +73,7 @@ async fn test_trigger_replay() {
     SERVICE_REGISTRY.write().await.register(instance).await;
 
     // 创建测试记录
-    let record = TrafficRecord {
+    let mut record = TrafficRecord {
         id: "test-2".to_string(),
         peer_id: "test-peer".to_string(),
         protocol: Protocol::HTTP,
@@ -101,7 +101,7 @@ async fn test_trigger_replay() {
     };
 
     // 触发回放
-    service.trigger_replay(&record).await;
+    service.trigger_replay(&mut record).await;
 }
 
 #[tokio::test]

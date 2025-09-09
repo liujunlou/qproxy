@@ -257,7 +257,7 @@ impl MqttClient {
                                 let publish_bytes =
                                     serde_json::to_vec(&publish).unwrap_or_default();
 
-                                let record = crate::model::TrafficRecord::new_tcp(
+                                let mut record = crate::model::TrafficRecord::new_tcp(
                                     &topic,
                                     publish_bytes,
                                     vec![],
@@ -284,7 +284,7 @@ impl MqttClient {
 
                                             // 2. 然后触发本地回放
                                             if let Err(e) =
-                                                playback_service.trigger_replay(&record).await
+                                                playback_service.trigger_replay(&mut record).await
                                             {
                                                 error!("Failed to trigger local replay for MQTT message: {}", e);
                                             } else {
@@ -365,7 +365,7 @@ impl MqttClient {
                                 let query_bytes =
                                     serde_json::to_vec(&query_message).unwrap_or_default();
 
-                                let record = crate::model::TrafficRecord::new_tcp(
+                                let mut record = crate::model::TrafficRecord::new_tcp(
                                     &topic,
                                     query_bytes,
                                     vec![],
@@ -392,7 +392,7 @@ impl MqttClient {
 
                                             // 2. 然后触发本地回放
                                             if let Err(e) =
-                                                playback_service.trigger_replay(&record).await
+                                                playback_service.trigger_replay(&mut record).await
                                             {
                                                 error!("Failed to trigger local replay for Query message: {}", e);
                                             } else {

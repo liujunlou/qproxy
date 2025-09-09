@@ -46,7 +46,7 @@ where
     record.request_headers.push(("mode".to_string(), "playback".to_string()));
 
     let data = serde_json::to_vec(&record.request_body)?;
-    let record = model::TrafficRecord::new_http(
+    let mut record = model::TrafficRecord::new_http(
         record.method,
         record.service_name,
         record.path,
@@ -71,7 +71,7 @@ where
                         .map_err(|e| Error::Http1(e.to_string()))?)
                 }
                 ProxyMode::Playback => {
-                    let response = match forward_http_traffic(record, playback_service).await {
+                    let response = match forward_http_traffic(&mut record, playback_service).await {
                         Ok(r) => r,
                         Err(e) => {
                             error!("Failed to forward HTTP traffic: {:?}", e);
@@ -103,8 +103,8 @@ async fn record_http_traffic(
 }
 
 async fn forward_http_traffic(
-    record: model::TrafficRecord,
+    record: &mut model::TrafficRecord,
     playback_service: &Arc<PlaybackService>,
 ) -> Result<Vec<u8>, Error> {
-    playback_service.trigger_replay(&record).await
+    playback_service.trigger_replay(record).await
 }

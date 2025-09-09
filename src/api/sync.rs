@@ -94,7 +94,7 @@ where
             let playback_service = PLAYBACK_SERVICE.read().await;
             let response = if let Some(playback_service) = playback_service.as_ref() {
                 match playback_service
-                    .sync_from_peer(record.clone())
+                    .sync_from_peer(&mut record.clone())
                     .await
                     .map_err(|e| {
                         error!("Failed to sync from peer: {}", e);

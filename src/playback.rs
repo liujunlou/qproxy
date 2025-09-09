@@ -855,8 +855,8 @@ impl PlaybackService {
     ///
     /// # 参数
     /// * `record` - 要同步的记录
-    pub async fn sync_from_peer(&self, record: TrafficRecord) -> Result<Vec<u8>, Error> {
-        let responses = self.trigger_replay(&record).await?;
+    pub async fn sync_from_peer(&self, record: &mut TrafficRecord) -> Result<Vec<u8>, Error> {
+        let responses = self.trigger_replay(record).await?;
         Ok(responses)
     }
 
@@ -884,7 +884,7 @@ impl PlaybackService {
     /// 1. HTTP/TCP 录制流量
     /// 2. 从 peer 同步的流量
     /// 3. 轮询获取的新流量
-    pub async fn trigger_replay(&self, record: &TrafficRecord) -> Result<Vec<u8>, Error> {
+    pub async fn trigger_replay(&self, record: &mut TrafficRecord) -> Result<Vec<u8>, Error> {
         if let Some(service_name) = record.request.service_name.as_ref() {
             match SERVICE_REGISTRY
                 .read()
@@ -954,22 +954,39 @@ impl PlaybackService {
                             } else {
                                 "http"
                             };
+
+                            // 根据回放的 http 请求的 Content-Type 来构建回放请求
+                            let params = if let Some(headers) = record.request.headers.clone() {
+                                if let Some((_, content_type)) = headers.iter().find(|(k, _)| k == "Content-Type") {
+                                    // 如果是 application/json，则忽略
+                                    if content_type.contains("applicaiton/x-www-form-urlencoded") {
+                                        if let Some(params) = record.request.params.clone() {
+                                            let body = serde_urlencoded::to_string(params).map_err(|e| {
+                                                Error::ServiceError(format!("Failed to encode params: {}", e))
+                                            })?;
+                                            record.request.body = body.into_bytes();
+                                        }
+                                    }
+                                    ""
+                                } else {
+                                    &record.request.params.as_ref().map(|u| u
+                                        .iter()
+                                        .map(|(k, v)| format!("{}={}", k, v))
+                                        .collect::<Vec<String>>()
+                                        .join("&"))
+                                        .unwrap_or("".to_string())
+                                }
+                            } else {
+                                ""
+                            };
+
                             let local_url = format!(
                                 "{}://{}:{}{}?{}",
                                 scheme,
                                 service.host,
                                 service.port,
                                 record.request.path.as_ref().unwrap_or(&"".to_string()),
-                                record
-                                    .request
-                                    .params
-                                    .as_ref()
-                                    .map(|u| u
-                                        .iter()
-                                        .map(|(k, v)| format!("{}={}", k, v))
-                                        .collect::<Vec<String>>()
-                                        .join("&"))
-                                    .unwrap_or("".to_string())
+                                params
                             );
                             info!("Request local url: {}", local_url.clone());
 
@@ -1119,9 +1136,9 @@ impl PlaybackService {
         let mut failed_records = Vec::new();
         for record in &records_to_replay {
             info!("Replaying traffic record: {}", record.id);
-            if let Err(e) = self.trigger_replay(record).await {
+            if let Err(e) = self.trigger_replay(&mut record.clone()).await {
                 // 将回放失败的记录写入列表进行重试
-                error!("Failed to replay traffic record: {}", e);
+                error!("Failed to replay traffic record {}: {}", record.id, e);
                 failed_records.push(record.id.clone());
             }
             // 更新offset
