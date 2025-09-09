@@ -1005,16 +1005,23 @@ impl PlaybackService {
                             let client = Builder::new((*self.executor).clone())
                                 .pool_idle_timeout(std::time::Duration::from_secs(30))
                                 .build_http();
-
+                            
                             match client.request(request).await {
                                 Ok(resp) => {
-                                    info!("Successfully replayed HTTP traffic to {}", local_url);
-                                    return Ok(resp
-                                        .into_body()
-                                        .collect()
-                                        .await?
-                                        .to_bytes()
-                                        .to_vec());
+                                    let status = resp.status();
+                                    if status.is_success() {
+                                        info!("Successfully replayed HTTP traffic to {} with status {}", local_url, status);
+                                        return Ok(resp
+                                            .into_body()
+                                            .collect()
+                                            .await?
+                                            .to_bytes()
+                                            .to_vec());
+                                    } else {
+                                        warn!("HTTP request failed with status {}: {}", status, local_url);
+                                        // 对于HTTP错误状态码，返回错误
+                                        return Err(Error::Http1(format!("HTTP request failed with status {}", status)));
+                                    }
                                 }
                                 Err(e) => {
                                     warn!("Failed to replay HTTP traffic: {}", e);
