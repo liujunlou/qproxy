@@ -91,7 +91,7 @@ impl SyncService {
                 match playback_service.acquire_sync_lock("default", "default").await {
                     Ok(_) => {
                         info!("Sync lock acquired");
-                        match Self::sync_from_peer(client, &peer, playback_service.clone()).await {
+                        match Self::sync_from_peer(client, &peer, options, playback_service.clone()).await {
                             Ok(_) => {
                                 info!("Successfully synced and replayed traffic records from peer");
                             }
@@ -128,10 +128,15 @@ impl SyncService {
     pub async fn sync_from_peer(
         client: &Arc<Client>,
         peer: &PeerOptions,
+        options: &Arc<Options>,
         playback_service: Arc<PlaybackService>,
     ) -> Result<(), Error> {
         let scheme = if peer.tls { "https" } else { "http" };
-        let url = format!("{}://{}:{}/sync", scheme, peer.host, peer.port);
+        let url = if let Some(from) = &options.from {
+            format!("{}://{}:{}/sync?from={}", scheme, peer.host, peer.port, from)
+        } else {
+            format!("{}://{}:{}/sync", scheme, peer.host, peer.port)
+        };
 
         info!("Syncing traffic records from peer: {}", url);
 

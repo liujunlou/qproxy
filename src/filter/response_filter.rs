@@ -1,4 +1,5 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
+use prost::Message;
 use std::sync::{Arc, RwLock};
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -6,8 +7,8 @@ use crate::{
     errors::Error,
     model::{Protocol, TrafficRecord},
     mqtt_client::codec::{
-        Message, MessageType, MqttCodec, MqttMessage, PublishMessage, QueryMessage,
-    },
+        MqttCodec, MqttMessage, PublishMessage, QueryMessage,
+    }, playback::route::RouteMessage,
 };
 
 use super::Filter;
@@ -15,13 +16,15 @@ use super::Filter;
 pub struct ResponseFilter {
     mqtt_codec: Arc<RwLock<MqttCodec>>,
     fields: Option<Vec<String>>,
+    skip_topics: Option<Vec<String>>,
 }
 
 impl ResponseFilter {
-    pub fn new(fields: Option<Vec<String>>) -> Self {
+    pub fn new(fields: Option<Vec<String>>, skip_topics: Option<Vec<String>>) -> Self {
         Self {
             mqtt_codec: Arc::new(RwLock::new(MqttCodec::new(1024 * 1024))),
             fields,
+            skip_topics
         }
     }
 
@@ -83,8 +86,66 @@ impl Filter for ResponseFilter {
                 .encode(updated_msg, &mut buf)
                 .map_err(|e| Error::MqttDecodeError(e.to_string()))?;
             filtered.response.body = buf.to_vec();
+        } else if record.protocol == Protocol::GRPC {
+            let mut route_message = RouteMessage::decode(&mut &record.request.body[..])
+                .map_err(|_| {
+                    Error::GrpcStatus(format!(
+                        "Failed to decode RouteMessage {:?}",
+                        record.request.body
+                    ))
+                })?;
+            // 过滤路由消息中的字段
+            if let Some(skip_topics) = &self.skip_topics {
+                if let Some(method) = route_message.method.as_ref() {
+                    if skip_topics.contains(method) {
+                        return Ok(filtered);
+                    }
+                }
+            }
+            if let Some(fields) = &self.fields {
+                for field in fields {
+                    if RouteMessage::field_names().contains(&field.as_str()) {
+                        route_message.remove(field);
+                    }
+                }
+            }
+            // 重新编码过滤后的消息
+            let mut buf = BytesMut::new();
+            route_message.encode(&mut buf).map_err(|e| Error::GrpcStatus(e.to_string()))?;
+            filtered.response.body = buf.to_vec();
+        } else { // http 协议不过滤
+            return Ok(filtered);
         }
 
         Ok(filtered)
+    }
+}
+
+impl RouteMessage {
+    pub fn field_names() -> Vec<&'static str> {
+        vec![
+            "message_id",
+            "method", 
+            "target_id",
+            "app_id",
+            "log_id",
+            "from_gateway",
+            "payload",
+            "metadata",
+        ]
+    }
+
+    pub fn remove(&mut self, field: &str) {
+        match field {
+            "message_id" => self.message_id = None,
+            "method" => self.method = None,
+            "target_id" => self.target_id = None,
+            "app_id" => self.app_id = None,
+            "log_id" => self.log_id = None,
+            "from_gateway" => self.from_gateway = None,
+            "payload" => self.payload = None,
+            "metadata" => self.metadata.clear(),
+            _ => {}
+        }
     }
 }

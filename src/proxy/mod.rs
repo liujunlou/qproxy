@@ -66,6 +66,7 @@ impl ProxyServer {
             .await
             .add_filter(Box::new(ResponseFilter::new(
                 self.options.http.filter_fields.clone(),
+                self.options.http.skip_topics.clone(),
             )));
 
         handles

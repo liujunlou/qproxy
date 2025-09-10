@@ -8,6 +8,7 @@ use crate::errors::Error;
 pub struct Options {
     // 节点的角色
     pub mode: ProxyMode,
+    pub from: Option<String>,
     // http代理节点
     pub http: HttpOptions,
     // tcp protobuf 服务器
@@ -39,6 +40,7 @@ pub struct HttpOptions {
     pub host: String,
     pub port: u16,
     pub downstream: Vec<String>,
+    pub skip_topics: Option<Vec<String>>,
     pub filter_fields: Option<Vec<String>>,
 }
 
@@ -183,10 +185,12 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             mode: ProxyMode::Record,
+            from: None,
             http: HttpOptions {
                 host: "0.0.0.0".to_string(),
                 port: 8080,
                 downstream: vec!["http://localhost:8080".to_string()],
+                skip_topics: None,
                 filter_fields: None,
             },
             tcp: None,

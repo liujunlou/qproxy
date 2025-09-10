@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use qproxy::{
     model::{Protocol, RequestData, ResponseData, TrafficRecord},
     options::{Options, PeerOptions},
@@ -68,7 +70,7 @@ async fn test_sync_from_peer() {
 
     let service = SyncService::new(&options).unwrap();
     let client = service.client.clone();
-    let peer = options.sync.peer.unwrap();
+    let peer = options.clone().sync.peer.unwrap();
 
     // 创建测试记录
     let record = TrafficRecord {
@@ -102,6 +104,7 @@ async fn test_sync_from_peer() {
     let result = SyncService::sync_from_peer(
         &client,
         &peer,
+        &Arc::new(options.clone()),
         qproxy::PLAYBACK_SERVICE
             .read()
             .await
